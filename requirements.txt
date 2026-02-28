@@ -1,0 +1,9 @@
+# Database
+psycopg2-binary==2.9.10
+pgvector==0.2.4
+
+# AWS
+boto3==1.34.34
+
+# Utilities
+python-dotenv==1.0.0
