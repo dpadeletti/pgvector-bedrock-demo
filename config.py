@@ -22,8 +22,8 @@ DB_CONFIG = {
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 BEDROCK_MODEL_ID = os.getenv('AWS_BEDROCK_MODEL_ID', 'amazon.titan-embed-text-v1')
 
-# Dimensioni vettore (Titan v1 = 1536)
-EMBEDDING_DIMENSION = 1536
+# Dimensioni vettore (Titan v2 = 1024)
+EMBEDDING_DIMENSION = 1024
 
 
 def get_db_connection():
