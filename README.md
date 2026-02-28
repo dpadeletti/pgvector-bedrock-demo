@@ -1,183 +1,188 @@
 # pgvector-bedrock-demo
 
-Progetto demo per testare **semantic search** con pgvector su AWS RDS e embeddings generati con AWS Bedrock Titan.
+Progetto demo di **semantic search** con pgvector su AWS RDS e embeddings generati con AWS Bedrock Titan V2.
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![AWS](https://img.shields.io/badge/AWS-RDS%20%7C%20Bedrock-orange.svg)](https://aws.amazon.com/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![AWS](https://img.shields.io/badge/AWS-RDS%20%7C%20Bedrock%20%7C%20EC2-orange.svg)](https://aws.amazon.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+## 🎯 Cosa fa questo progetto
+
+Sistema completo di semantic search che:
+- ✅ Salva embeddings vettoriali (1024 dimensioni) in PostgreSQL con pgvector
+- ✅ Genera embeddings usando AWS Bedrock Titan Embeddings V2
+- ✅ Ricerca documenti simili usando similarità coseno
+- ✅ Deploy automatizzato su AWS (RDS + EC2)
+- ✅ Script pronti per setup completo in < 15 minuti
 
 ## 📋 Prerequisiti
 
-- Account AWS con accesso a:
-  - RDS (PostgreSQL)
-  - Bedrock (modello Titan Embeddings)
-- Python 3.8+
-- AWS CLI configurata con credenziali
+- **Account AWS** con accesso a:
+  - RDS (PostgreSQL 16+)
+  - Bedrock (Titan Embeddings)
+  - EC2 (opzionale, per deployment)
+- **Python 3.11+** (o 3.12)
+- **AWS CLI** configurata con credenziali
+- **Credito free tier AWS** (consigliato per testing)
 
-## 🚀 Setup Rapido
+## 🚀 Quick Start (3 opzioni)
 
-### Opzione A: Sviluppo Locale
-
-1. **Crea RDS PostgreSQL** su AWS (db.t3.micro per free tier)
-2. **Attiva Bedrock** e richiedi accesso a Titan Embeddings
-3. **Copia `.env.example` → `.env`** e inserisci le tue credenziali
-4. **Installa**: `pip install -r requirements.txt`
-5. **Setup DB**: `python init_db.py`
-6. **Test rapido**: `python quick_test.py`
-7. **Inserisci dati**: `python insert_data.py`
-8. **Ricerca**: `python search.py --interactive`
-
-### Opzione B: Deployment su EC2
-
-Per deployare su istanza EC2, segui la guida completa: **[EC2_DEPLOYMENT.md](EC2_DEPLOYMENT.md)**
-
-**Quick start EC2:**
-```bash
-# Su EC2, esegui:
-curl -O https://raw.githubusercontent.com/TUO-USERNAME/pgvector-bedrock-demo/main/setup_ec2.sh
-chmod +x setup_ec2.sh
-./setup_ec2.sh
-```
-
-### Verifica Setup AWS
-
-Prima di iniziare, verifica cosa hai già configurato:
+### ✅ Opzione 1: Setup Automatico Completo (Consigliato)
 
 ```bash
-python check_aws_setup.py
-```
+# 1. Clona il repository
+git clone https://github.com/dpadeletti/pgvector-bedrock-demo.git
+cd pgvector-bedrock-demo
 
-Questo script controlla:
-- ✅ Credenziali AWS configurate
-- ✅ Istanze RDS PostgreSQL
-- ✅ Accesso a Bedrock e Titan Embeddings
-- ✅ Istanze EC2 (se presenti)
+# 2. Crea RDS PostgreSQL (7-10 minuti)
+chmod +x setup_rds.sh
+./setup_rds.sh
 
-```bash
-# Via AWS Console:
-# - Engine: PostgreSQL 15+
-# - Template: Free tier (per test) o Production
-# - DB instance identifier: pgvector-test
-# - Master username: postgres
-# - Master password: [scegli una password]
-# - Public access: Yes (per test locale)
-# - Security group: consenti connessioni sulla porta 5432 dal tuo IP
-```
-
-Oppure via AWS CLI:
-
-```bash
-aws rds create-db-instance \
-    --db-instance-identifier pgvector-test \
-    --db-instance-class db.t3.micro \
-    --engine postgres \
-    --master-username postgres \
-    --master-password TuaPasswordSicura123 \
-    --allocated-storage 20 \
-    --publicly-accessible \
-    --backup-retention-period 0
-```
-
-### 2. Attiva pgvector su RDS
-
-Una volta creata l'istanza, connettiti e installa l'estensione:
-
-```bash
-# Ottieni l'endpoint RDS dalla console AWS
-psql -h tuo-endpoint.rds.amazonaws.com -U postgres -d postgres
-
-# Nel prompt psql, esegui:
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-Oppure usa lo script SQL fornito:
-
-```bash
-psql -h tuo-endpoint.rds.amazonaws.com -U postgres -d postgres -f setup.sql
-```
-
-### 3. Configura AWS Bedrock
-
-Assicurati di avere accesso al modello Titan Embeddings:
-
-```bash
-# Nella console AWS Bedrock, vai su "Model access"
-# Richiedi accesso a: Amazon Titan Embeddings G1 - Text
-```
-
-### 4. Installa dipendenze Python
-
-```bash
+# 3. Installa dipendenze Python
+python3.11 -m venv venv
+source venv/bin/activate  # Su Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-### 5. Configura variabili d'ambiente
+# 4. Configura .env con l'endpoint RDS che ti ha dato lo script
+cp .env.example .env
+nano .env  # Inserisci endpoint, password, region
 
-Crea un file `.env`:
-
-```bash
-# Database
-DB_HOST=tuo-endpoint.rds.amazonaws.com
-DB_PORT=5432
-DB_NAME=postgres
-DB_USER=postgres
-DB_PASSWORD=TuaPasswordSicura123
-
-# AWS
-AWS_REGION=us-east-1
-AWS_BEDROCK_MODEL_ID=amazon.titan-embed-text-v1
-```
-
-### 6. Esegui il progetto
-
-```bash
-# Inizializza il database
+# 5. Inizializza e testa
 python init_db.py
-
-# Inserisci documenti di esempio con embeddings
 python insert_data.py
-
-# Esegui query di similarity search
-python search.py "come funziona il machine learning?"
+python search.py "machine learning"
 ```
+
+### 🌍 Opzione 2: Deploy su EC2
+
+```bash
+# 1. Crea istanza EC2 (2-3 minuti)
+chmod +x create_ec2.sh
+./create_ec2.sh
+
+# 2. SSH nell'istanza
+ssh -i pgvector-demo-key.pem ubuntu@<IP-PUBBLICO>
+
+# 3. Setup su EC2
+git clone https://github.com/dpadeletti/pgvector-bedrock-demo.git
+cd pgvector-bedrock-demo
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 4. Configura .env e testa
+cp .env.example .env
+nano .env
+python search.py "machine learning"
+```
+
+### 🔧 Opzione 3: Setup Manuale
+
+Vedi le guide dettagliate:
+- **[Setup RDS](EC2_DEPLOYMENT.md#step-1-crea-rds-postgresql)**
+- **[Deploy EC2](EC2_DEPLOYMENT.md)**
 
 ## 📁 Struttura Progetto
 
 ```
-.
+pgvector-bedrock-demo/
 ├── README.md              # Questa guida
+├── EC2_DEPLOYMENT.md      # Guida deployment EC2 completa
+├── GITHUB_SETUP.md        # Guida push su GitHub
 ├── requirements.txt       # Dipendenze Python
-├── setup.sql             # Script inizializzazione DB
-├── config.py             # Configurazione
-├── embeddings.py         # Generazione embeddings con Bedrock
-├── init_db.py            # Crea tabelle
-├── insert_data.py        # Inserisce dati di esempio
-└── search.py             # Ricerca similarity
+├── setup.sql             # Script SQL inizializzazione
+├── .env.example          # Template configurazione
+├── .gitignore            # File da ignorare
+├── LICENSE               # Licenza MIT
+│
+├── config.py             # Configurazione DB e AWS
+├── embeddings.py         # Client AWS Bedrock
+├── init_db.py            # Crea tabelle + pgvector
+├── insert_data.py        # Inserisce documenti di esempio
+├── search.py             # Ricerca similarity (numpy)
+├── check_aws_setup.py    # Verifica setup AWS
+│
+├── setup_rds.sh          # Script automatico RDS
+└── create_ec2.sh         # Script automatico EC2
 ```
 
 ## 🔍 Come Funziona
 
-1. **Embeddings**: I testi vengono convertiti in vettori (1536 dimensioni) usando AWS Bedrock Titan
-2. **Storage**: I vettori vengono salvati in PostgreSQL con l'estensione pgvector
-3. **Search**: Le query usano la similarità del coseno per trovare i documenti più rilevanti
+### Architettura
 
-## 💰 Costi Stimati (per test)
+```
+┌─────────────┐
+│   Python    │
+│   (locale   │
+│   o EC2)    │
+└──────┬──────┘
+       │
+       ├──────────────┐
+       │              │
+       ▼              ▼
+  ┌─────────┐   ┌──────────┐
+  │   RDS   │   │ Bedrock  │
+  │(pgvector)│  │ (Titan)  │
+  └─────────┘   └──────────┘
+  eu-north-1    eu-north-1
+```
 
-- **RDS db.t3.micro**: ~$0.017/ora (~$12/mese, free tier 750 ore/mese)
-- **Bedrock Titan Embeddings**: ~$0.0001 per 1000 token input
-- **Storage RDS**: minimo per test (<$1)
+### Flusso Dati
 
-**Totale per testing**: < $5/mese se usi free tier
+1. **Input**: Documento testuale (es: "Il machine learning...")
+2. **Embedding**: Bedrock Titan V2 → vettore 1024 dimensioni
+3. **Storage**: PostgreSQL + pgvector salva documento + embedding
+4. **Query**: Testo query → embedding → ricerca similarità coseno
+5. **Output**: Top-K documenti più simili (ordinati per score)
 
-## 🧪 Esempio di Utilizzo
+### Dettagli Tecnici
+
+- **Embeddings**: Titan Text Embeddings V2 (1024 dim)
+- **Database**: PostgreSQL 16.6 con estensione pgvector 0.8.0
+- **Similarità**: Coseno (calcolata in Python con numpy)
+- **Region AWS**: eu-north-1 (Stockholm)
+- **Instance Classes**: db.t3.micro (RDS), t3.micro (EC2)
+
+## 📝 Configurazione (.env)
+
+```bash
+# Database (RDS endpoint)
+DB_HOST=pgvector-demo-db.xxxxx.eu-north-1.rds.amazonaws.com
+DB_PORT=5432
+DB_NAME=postgres
+DB_USER=postgres
+DB_PASSWORD=YourSecurePassword123
+
+# AWS Bedrock
+AWS_REGION=eu-north-1
+AWS_BEDROCK_MODEL_ID=amazon.titan-embed-text-v2:0
+```
+
+## 🧪 Esempi di Utilizzo
+
+### Ricerca Interattiva
+
+```bash
+python search.py --interactive
+
+Query: machine learning
+# Output:
+# 1. [ID: 2] Similarita: 0.601
+#    Il machine learning è un sottoinsieme dell'intelligenza artificiale...
+# 2. [ID: 4] Similarita: 0.324
+#    Python è uno dei linguaggi più popolari per ML...
+```
+
+### Da Codice Python
 
 ```python
 from embeddings import get_embedding
 from config import get_db_connection
+import numpy as np
 
 # Genera embedding
 text = "L'intelligenza artificiale è affascinante"
-vector = get_embedding(text)
+vector = get_embedding(text)  # 1024 dimensioni
 
 # Inserisci nel database
 conn = get_db_connection()
@@ -188,38 +193,104 @@ cur.execute(
 )
 conn.commit()
 
-# Cerca documenti simili
-query_vector = get_embedding("AI e machine learning")
-cur.execute(
-    """
-    SELECT content, 1 - (embedding <=> %s::vector) as similarity
-    FROM documents
-    ORDER BY embedding <=> %s::vector
-    LIMIT 5
-    """,
-    (query_vector, query_vector)
-)
-results = cur.fetchall()
-for content, similarity in results:
-    print(f"{similarity:.3f} - {content}")
+# Ricerca similarity
+from search import search
+results = search("AI e machine learning", top_k=5)
+
+# Output: [(id, content, similarity, metadata), ...]
+for doc_id, content, sim, meta in results:
+    print(f"[{sim:.3f}] {content[:80]}")
 ```
+
+### Inserimento Custom
+
+```bash
+# Aggiungi singoli documenti
+python insert_data.py --custom "Il tuo testo qui"
+
+# Batch di 10 documenti di esempio (IT/ML topics)
+python insert_data.py
+```
+
+## 💰 Costi AWS (Stima)
+
+| Servizio | Tipo | Costo/mese | Free Tier |
+|----------|------|------------|-----------|
+| RDS PostgreSQL | db.t3.micro | ~$12 | ✅ 750 ore/mese (12 mesi) |
+| EC2 | t3.micro | ~$8 | ✅ 750 ore/mese (12 mesi) |
+| Bedrock Titan | Embeddings | ~$0.10 | ❌ Pay per use |
+| Storage | 20GB | ~$2 | Incluso |
+
+**Totale per testing**: < $1/mese con free tier attivo  
+**Totale senza free tier**: ~$22/mese
 
 ## 🛠️ Troubleshooting
 
-**Errore: "extension vector does not exist"**
-- Soluzione: Esegui `CREATE EXTENSION vector;` nel database
+### Errore: `extension vector does not exist`
+```bash
+# Soluzione: Installa pgvector
+psql -h YOUR-RDS-ENDPOINT -U postgres -d postgres
+CREATE EXTENSION IF NOT EXISTS vector;
+```
 
-**Errore: "connection refused"**
-- Soluzione: Verifica security group RDS e che public access sia abilitato
+### Errore: `Connection timed out` (RDS)
+```bash
+# Problema: Security group non permette connessioni
+# Soluzione: Aggiungi il tuo IP al security group RDS
+aws ec2 authorize-security-group-ingress \
+    --group-id sg-XXXXX \
+    --protocol tcp \
+    --port 5432 \
+    --cidr $(curl -s https://checkip.amazonaws.com)/32 \
+    --region eu-north-1
+```
 
-**Errore: "access denied" su Bedrock**
-- Soluzione: Richiedi accesso al modello nella console Bedrock
+### Errore: `InvalidParameterCombination` (versione PostgreSQL)
+```bash
+# Problema: Versione non disponibile in eu-north-1
+# Soluzione: Usa versione disponibile
+aws rds describe-db-engine-versions \
+    --engine postgres \
+    --region eu-north-1 \
+    --query "DBEngineVersions[].EngineVersion"
+# Usa una versione dall'output (es: 16.6)
+```
 
-## 📚 Risorse
+### Errore: `Access denied` (Bedrock)
+```bash
+# Problema: Modello non abilitato
+# Soluzione: Vai su AWS Console → Bedrock → Model access
+# Richiedi accesso a: Amazon Titan Text Embeddings V2
+```
 
-- [pgvector GitHub](https://github.com/pgvector/pgvector)
-- [AWS Bedrock Embeddings](https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html)
-- [pgvector su RDS](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/postgresql-extensions.html)
+### Errore: `expected 1536 dimensions, not 1024`
+```bash
+# Problema: Tabella creata per Titan V1 (1536 dim)
+# Soluzione: Ricrea con dimensioni corrette
+python init_db.py --reset  # Scrivi SI quando chiede conferma
+```
+
+## 📚 Risorse e Link
+
+- **Documentazione**:
+  - [pgvector](https://github.com/pgvector/pgvector) - Extension PostgreSQL per vector similarity
+  - [AWS Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html) - Titan Embeddings
+  - [RDS PostgreSQL](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/postgresql-extensions.html) - Extension support
+
+- **Guide Interne**:
+  - [EC2_DEPLOYMENT.md](EC2_DEPLOYMENT.md) - Deployment completo
+  - [GITHUB_SETUP.md](GITHUB_SETUP.md) - Push su GitHub
+
+## 🚀 Next Steps
+
+Questo progetto è un'ottima base per:
+
+1. **Aggiungere più documenti** (scale to 1000+)
+2. **Creare API REST** (FastAPI + Uvicorn)
+3. **Containerizzare** (Docker + Docker Compose)
+4. **Setup CI/CD** (GitHub Actions)
+5. **Ottimizzare search** (usare pgvector `<=>` invece di numpy)
+6. **Aggiungere UI** (Streamlit o React)
 
 ## 🤝 Contribuire
 
@@ -227,22 +298,27 @@ Contribuzioni benvenute!
 
 1. Fork il progetto
 2. Crea un branch (`git checkout -b feature/AmazingFeature`)
-3. Commit le modifiche (`git commit -m 'Add AmazingFeature'`)
-4. Push al branch (`git push origin feature/AmazingFeature`)
+3. Commit (`git commit -m 'Add AmazingFeature'`)
+4. Push (`git push origin feature/AmazingFeature`)
 5. Apri una Pull Request
 
 ## 📄 License
 
-Distribuito sotto licenza MIT. Vedi `LICENSE` per maggiori informazioni.
+Distribuito sotto licenza MIT. Vedi [LICENSE](LICENSE) per dettagli.
 
-## 🐛 Bug Reports & Feature Requests
+## 🐛 Issues
 
-Usa GitHub Issues per segnalare bug o richiedere nuove feature.
+Usa [GitHub Issues](https://github.com/dpadeletti/pgvector-bedrock-demo/issues) per:
+- 🐛 Bug reports
+- 💡 Feature requests
+- 📖 Domande e supporto
 
-## 📞 Contatti
+## 👨‍💻 Autore
 
-Per domande o supporto, apri una issue su GitHub.
+**Davide Padeletti** - [GitHub](https://github.com/dpadeletti)
 
 ---
 
-**Fatto con ❤️ per testare pgvector + AWS Bedrock**
+**Fatto con ❤️ per esplorare semantic search con pgvector + AWS Bedrock**
+
+⭐ Se ti è utile, lascia una stella su GitHub!

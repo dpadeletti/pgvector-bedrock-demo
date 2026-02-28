@@ -14,7 +14,7 @@ echo ""
 
 # Configurazione
 INSTANCE_NAME="pgvector-demo-server"
-INSTANCE_TYPE="t2.micro"  # Free tier
+INSTANCE_TYPE="t3.micro"  # Free tier
 KEY_NAME="pgvector-demo-key"
 REGION="eu-north-1"  # Stockholm
 

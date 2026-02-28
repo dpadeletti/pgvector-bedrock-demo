@@ -19,10 +19,10 @@ DB_CONFIG = {
 }
 
 # Configurazione AWS Bedrock
-AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
-BEDROCK_MODEL_ID = os.getenv('AWS_BEDROCK_MODEL_ID', 'amazon.titan-embed-text-v1')
+AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
+BEDROCK_MODEL_ID = os.getenv('AWS_BEDROCK_MODEL_ID', 'amazon.titan-embed-text-v2:0')
 
-# Dimensioni vettore (Titan v2 = 1024)
+# Dimensioni vettore (Titan V2 = 1024)
 EMBEDDING_DIMENSION = 1024
 
 
