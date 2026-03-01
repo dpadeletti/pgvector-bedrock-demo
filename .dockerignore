@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+*.egg-info/
+
+# Env (non includere mai credenziali nell'immagine)
+.env
+
+# Test e script non necessari in produzione
+tests/
+scripts/
+deployment/
+
+# Docs
+*.md
+LICENSE
+
+# OS
+.DS_Store

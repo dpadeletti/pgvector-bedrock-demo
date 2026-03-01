@@ -1,0 +1,49 @@
+services:
+
+  # ──────────────────────────────────────────
+  # PostgreSQL + pgvector (solo per dev locale)
+  # In produzione (ECS) si usa RDS
+  # ──────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: pgvector-db
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ──────────────────────────────────────────
+  # FastAPI app
+  # ──────────────────────────────────────────
+  api:
+    build: .
+    container_name: pgvector-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override DB host: punta al container locale invece di RDS
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: postgres
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+    volumes:
+      - ~/.aws:/root/.aws:ro   # credenziali AWS dall'host
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  pgvector_data:
