@@ -1,64 +1,62 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Simple search usando similarita coseno calcolata in Python
+Semantic search usando pgvector <=> operator (cosine distance) via SQL
 """
-import numpy as np
 import json
 from embeddings import get_embedding
 from config import get_db_connection
 
-def cosine_similarity(a, b):
-    """Calcola similarita coseno tra due vettori"""
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 def search(query, top_k=5):
     print(f"Ricerca: '{query}'")
-    
+
     # Genera embedding della query
     print("   Genero embedding...")
-    query_emb = np.array(get_embedding(query))
-    
-    # Recupera tutti i documenti
-    print("   Carico documenti dal database...")
-    conn = get_db_connection()
+    query_emb = get_embedding(query)  # lista di float, register_vector la gestisce
+
+    # Query pgvector: <=> = cosine distance, similarity = 1 - distance
+    print("   Cerco nel database...")
+    conn = get_db_connection()  # register_vector già chiamato qui
     cur = conn.cursor()
-    cur.execute("SELECT id, content, embedding, metadata FROM documents")
-    
-    # Calcola similarita per ogni documento
-    results = []
-    for doc_id, content, embedding, metadata in cur.fetchall():
-        doc_emb = np.array(embedding)
-        similarity = cosine_similarity(query_emb, doc_emb)
-        results.append((doc_id, content, similarity, metadata))
-    
+    cur.execute(
+        """
+        SELECT id, content, metadata,
+               1 - (embedding <=> %s::vector) AS similarity
+        FROM documents
+        ORDER BY similarity DESC
+        LIMIT %s
+        """,
+        (query_emb, top_k)
+    )
+    rows = cur.fetchall()
     cur.close()
     conn.close()
-    
-    # Ordina per similarita
-    results.sort(key=lambda x: x[2], reverse=True)
-    
-    # Mostra top risultati
+
+    # Mostra risultati
     print(f"\nTop {top_k} risultati:\n")
-    for i, (doc_id, content, sim, metadata) in enumerate(results[:top_k], 1):
-        print(f"{i}. [ID: {doc_id}] Similarita: {sim:.3f}")
+    results = []
+    for i, (doc_id, content, metadata, similarity) in enumerate(rows, 1):
+        print(f"{i}. [ID: {doc_id}] Similarità: {similarity:.3f}")
         if metadata:
             meta = metadata if isinstance(metadata, dict) else json.loads(metadata)
             category = meta.get('category', 'N/A')
             print(f"   Categoria: {category}")
         print(f"   {content}")
         print()
-    
-    return results[:top_k]
+        results.append((doc_id, content, similarity, metadata))
+
+    return results
+
 
 if __name__ == "__main__":
     import sys
-    
+
     if len(sys.argv) > 1:
         query = " ".join(sys.argv[1:])
         search(query)
     else:
-        # Modalita interattiva
+        # Modalità interattiva
         print("Ricerca Interattiva (scrivi 'exit' per uscire)\n")
         while True:
             try:

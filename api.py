@@ -12,7 +12,6 @@ from datetime import datetime
 
 from config import get_db_connection, EMBEDDING_DIMENSION
 from embeddings import get_embedding
-import numpy as np
 
 
 # ============================================================================
@@ -23,7 +22,7 @@ class SearchRequest(BaseModel):
     """Request per ricerca semantic"""
     query: str = Field(..., description="Testo della query di ricerca", min_length=1)
     limit: int = Field(5, description="Numero massimo di risultati", ge=1, le=50)
-    
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -53,7 +52,7 @@ class DocumentCreate(BaseModel):
     """Request per creare nuovo documento"""
     content: str = Field(..., description="Contenuto testuale del documento", min_length=10)
     metadata: Optional[dict] = Field(None, description="Metadata opzionali (categoria, source, etc)")
-    
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -128,15 +127,6 @@ app.add_middleware(
 
 
 # ============================================================================
-# Helper Functions
-# ============================================================================
-
-def cosine_similarity(a, b):
-    """Calcola similarità coseno tra due vettori"""
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-
-# ============================================================================
 # Endpoints
 # ============================================================================
 
@@ -158,15 +148,10 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse, tags=["General"])
 async def health_check():
-    """
-    Health check endpoint
-    
-    Verifica connessione a database e Bedrock
-    """
+    """Health check — verifica connessione a database e Bedrock"""
     db_status = "unknown"
     bedrock_status = "unknown"
-    
-    # Test database
+
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -176,8 +161,7 @@ async def health_check():
         db_status = "connected"
     except Exception as e:
         db_status = f"error: {str(e)}"
-    
-    # Test Bedrock (genera embedding di test)
+
     try:
         test_emb = get_embedding("test")
         if len(test_emb) == EMBEDDING_DIMENSION:
@@ -186,9 +170,9 @@ async def health_check():
             bedrock_status = f"error: wrong dimension {len(test_emb)}"
     except Exception as e:
         bedrock_status = f"error: {str(e)}"
-    
+
     overall_status = "healthy" if db_status == "connected" and bedrock_status == "available" else "degraded"
-    
+
     return {
         "status": overall_status,
         "database": db_status,
@@ -201,52 +185,51 @@ async def health_check():
 async def search_documents(request: SearchRequest):
     """
     Ricerca semantic di documenti
-    
+
     - **query**: Testo della query di ricerca
     - **limit**: Numero massimo di risultati (default: 5, max: 50)
-    
-    Ritorna i documenti più simili ordinati per similarità (coseno)
+
+    Ritorna i documenti più simili ordinati per similarità coseno, calcolata
+    direttamente in PostgreSQL tramite l'operatore pgvector <=>
     """
     try:
         # Genera embedding della query
         query_embedding = get_embedding(request.query)
-        query_emb_np = np.array(query_embedding)
-        
-        # Connetti al database
-        conn = get_db_connection()
+
+        # Query pgvector: <=> = cosine distance → similarity = 1 - distance
+        conn = get_db_connection()  # register_vector già chiamato qui
         cur = conn.cursor()
-        
-        # Recupera tutti i documenti con embeddings
-        cur.execute("SELECT id, content, embedding, metadata FROM documents")
-        
-        # Calcola similarità per ogni documento
-        results = []
-        for doc_id, content, embedding, metadata in cur.fetchall():
-            doc_emb = np.array(embedding)
-            similarity = float(cosine_similarity(query_emb_np, doc_emb))
-            results.append({
-                'id': doc_id,
-                'content': content,
-                'similarity': similarity,
-                'metadata': metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else None)
-            })
-        
+        cur.execute(
+            """
+            SELECT id, content, metadata,
+                   1 - (embedding <=> %s::vector) AS similarity
+            FROM documents
+            ORDER BY similarity DESC
+            LIMIT %s
+            """,
+            (query_embedding, request.limit)
+        )
+        rows = cur.fetchall()
         cur.close()
         conn.close()
-        
-        # Ordina per similarità (dal più alto al più basso)
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        # Limita risultati
-        results = results[:request.limit]
-        
+
+        results = [
+            {
+                "id": doc_id,
+                "content": content,
+                "similarity": float(similarity),
+                "metadata": metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else None)
+            }
+            for doc_id, content, metadata, similarity in rows
+        ]
+
         return {
             "query": request.query,
             "results": results,
             "count": len(results),
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -258,20 +241,15 @@ async def search_documents(request: SearchRequest):
 async def create_document(document: DocumentCreate):
     """
     Crea un nuovo documento con embedding
-    
+
     - **content**: Testo del documento (minimo 10 caratteri)
     - **metadata**: Metadata opzionali (categoria, source, language, etc)
-    
-    Il sistema genera automaticamente l'embedding usando AWS Bedrock Titan
     """
     try:
-        # Genera embedding
         embedding = get_embedding(document.content)
-        
-        # Inserisci nel database
+
         conn = get_db_connection()
         cur = conn.cursor()
-        
         cur.execute(
             """
             INSERT INTO documents (content, embedding, metadata, created_at)
@@ -284,20 +262,18 @@ async def create_document(document: DocumentCreate):
                 json.dumps(document.metadata) if document.metadata else None
             )
         )
-        
         doc_id, created_at = cur.fetchone()
         conn.commit()
-        
         cur.close()
         conn.close()
-        
+
         return {
             "id": doc_id,
             "content": document.content,
             "metadata": document.metadata,
             "created_at": created_at.isoformat()
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -313,19 +289,18 @@ async def list_documents(
 ):
     """
     Lista documenti nel database
-    
+
     - **limit**: Numero massimo di documenti (default: 10, max: 100)
     - **offset**: Offset per paginazione (default: 0)
     - **category**: Filtra per categoria (opzionale)
     """
     if limit > 100:
         limit = 100
-    
+
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        # Prima ottieni il count totale
+
         if category:
             cur.execute(
                 "SELECT COUNT(*) FROM documents WHERE metadata->>'category' = %s",
@@ -333,10 +308,8 @@ async def list_documents(
             )
         else:
             cur.execute("SELECT COUNT(*) FROM documents")
-        
         total = cur.fetchone()[0]
-        
-        # Poi recupera i documenti
+
         if category:
             cur.execute(
                 """
@@ -358,25 +331,26 @@ async def list_documents(
                 """,
                 (limit, offset)
             )
-        
-        documents = []
-        for doc_id, content, metadata in cur.fetchall():
-            documents.append({
-                'id': doc_id,
-                'content': content,
-                'metadata': metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else None)
-            })
-        
+
+        documents = [
+            {
+                "id": doc_id,
+                "content": content,
+                "metadata": metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else None)
+            }
+            for doc_id, content, metadata in cur.fetchall()
+        ]
+
         cur.close()
         conn.close()
-        
+
         return {
             "documents": documents,
             "total": total,
             "limit": limit,
             "offset": offset
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -386,47 +360,32 @@ async def list_documents(
 
 @app.get("/stats", response_model=StatsResponse, tags=["Stats"])
 async def get_stats():
-    """
-    Statistiche sul database
-    
-    Ritorna:
-    - Numero totale di documenti
-    - Distribuzione per categoria
-    - Dimensione embedding utilizzata
-    """
+    """Statistiche sul database — totale documenti, categorie, dimensione embedding"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        # Conteggio totale
+
         cur.execute("SELECT COUNT(*) FROM documents")
         total = cur.fetchone()[0]
-        
-        # Conteggio per categoria
+
         cur.execute("""
-            SELECT 
-                metadata->>'category' as category,
-                COUNT(*) as count
+            SELECT metadata->>'category' AS category, COUNT(*) AS count
             FROM documents
             WHERE metadata IS NOT NULL AND metadata->>'category' IS NOT NULL
-            GROUP BY metadata->>'category'
+            GROUP BY category
             ORDER BY count DESC
         """)
-        
-        categories = {}
-        for cat, count in cur.fetchall():
-            if cat:
-                categories[cat] = count
-        
+        categories = {cat: count for cat, count in cur.fetchall() if cat}
+
         cur.close()
         conn.close()
-        
+
         return {
             "total_documents": total,
             "categories": categories,
             "embedding_dimension": EMBEDDING_DIMENSION
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
