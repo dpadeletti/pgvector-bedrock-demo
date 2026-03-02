@@ -6,11 +6,13 @@ FastAPI REST API per semantic search + RAG chat con pgvector + AWS Bedrock
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 import boto3
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from config import get_db_connection, EMBEDDING_DIMENSION
@@ -221,20 +223,14 @@ def call_llm(question: str, context_chunks: list, model_id: str) -> str:
 # Endpoints
 # ============================================================================
 
-@app.get("/", tags=["General"])
+@app.get("/", response_class=HTMLResponse, tags=["General"])
 async def root():
-    return {
-        "name": "Pgvector Semantic Search API",
-        "version": "2.0.0",
-        "endpoints": {
-            "docs":      "/docs",
-            "health":    "/health",
-            "search":    "POST /search",
-            "chat":      "POST /chat",
-            "documents": "GET/POST /documents",
-            "stats":     "GET /stats"
-        }
-    }
+    """Serve la Chat UI."""
+    ui_path = Path(__file__).parent / "chat_ui.html"
+    if ui_path.exists():
+        return HTMLResponse(content=ui_path.read_text(encoding="utf-8"))
+    # Fallback JSON se il file non esiste
+    return HTMLResponse(content="<h1>Chat UI not found — make sure chat_ui.html is in the same folder as api.py</h1>", status_code=404)
 
 
 @app.get("/ping", tags=["General"])
