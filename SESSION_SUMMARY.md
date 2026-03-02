@@ -12,7 +12,7 @@
 |---------|---------|
 | ECS Cluster | pgvector-demo-cluster |
 | ECS Service | pgvector-demo-service |
-| Task Definition | pgvector-demo-task:2 |
+| Task Definition | pgvector-demo-task:3 |
 | RDS | pgvector-demo-db.c5y0ukeko14j.eu-north-1.rds.amazonaws.com |
 | ECR | 216571348735.dkr.ecr.eu-north-1.amazonaws.com/pgvector-bedrock-demo |
 | ALB | pgvector-alb / pgvector-alb-1618965750.eu-north-1.elb.amazonaws.com |
@@ -26,14 +26,32 @@
 | SG RDS | sg-029573f0998e11be5 |
 | SG EC2 | sg-0d2b46cc2e119bfb6 |
 | IAM Role | pgvector-ecs-task-role |
+| Secret | arn:aws:secretsmanager:eu-north-1:216571348735:secret:pgvector-demo/db-password-hOQbOd |
+
+## CI/CD
+- **GitHub Actions**: `.github/workflows/deploy.yml`
+- **Trigger**: push su `main`
+- **Pipeline**: test (validation only) → build + push ECR → force-new-deployment ECS → wait stable
+- **Secrets GitHub**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (utente IAM: davide-dev)
+
+## Secrets Manager
+- `DB_PASSWORD` migrata da variabile in chiaro nella task definition a AWS Secrets Manager
+- Secret name: `pgvector-demo/db-password`
+- Il `.env` locale mantiene la password per uso locale (non committato)
 
 ## Per riavviare le risorse
 ```bash
-aws rds start-db-instance --db-instance-identifier pgvector-demo-db --region eu-north-1aws rds startte-service --cluster pgvector-demo-cluster --service pgvector-demo-service --desired-count 1 --region eu-north-1
+aws rds start-db-instance --db-instance-identifier pgvector-demo-db --region eu-north-1
+
+aws ecs update-service --cluster pgvector-demo-cluster --service pgvector-demo-service --desired-count 1 --region eu-north-1
 ```
 
+## Completato ✅
+1. ~~Rimuovi HEALTHCHECK dal Dockerfile~~ — rimosso, rebuild + push + redeploy fatto
+2. ~~GitHub Actions CI/CD~~ — operativo su push a main
+3. ~~Secrets Manager per DB_PASSWORD~~ — migrato, task definition :3 attiva
+
 ## Prossimi step
-1. Rimuovi HEALTHCHECK dal Dockerfile (rebuild + push + redeploy)
-2. GitHub Actions CI/CD (push → ECR → ECS auto-deploy)
-3. Secrets Manager per DB_PASSWORD
-4. Opzionale: HTTPS ACM
+- HTTPS con ACM (richiede acquisto dominio — rimandato)
+- Aggiungere più documenti (scale to 1000+)
+- Ottimizzare indice pgvector (HNSW o IVFFlat per dataset grandi)
