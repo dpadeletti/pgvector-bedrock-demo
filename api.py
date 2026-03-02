@@ -145,6 +145,9 @@ async def root():
         }
     }
 
+@app.get("/ping", tags=["General"])
+async def ping():
+    return {"status": "ok"}
 
 @app.get("/health", response_model=HealthResponse, tags=["General"])
 async def health_check():
