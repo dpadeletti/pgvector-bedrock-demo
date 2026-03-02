@@ -23,14 +23,11 @@ client = TestClient(app)
 # ============================================================================
 
 def test_root():
-    """Test root endpoint"""
+    """Test root endpoint — ora serve la Chat UI (HTML)"""
     response = client.get("/")
     assert response.status_code == 200
-    data = response.json()
-    assert "name" in data
-    assert "version" in data
-    assert "version" in data  # verifica solo che il campo esista
-    assert "endpoints" in data  # verifica solo che il campo esista
+    assert "text/html" in response.headers["content-type"]
+    assert "pgvector" in response.text.lower()
 
 
 def test_health():
