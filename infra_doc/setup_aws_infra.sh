@@ -23,8 +23,7 @@
 #   - AWS CLI configurata (aws configure)
 #   - Docker installato e running
 #   - jq installato (brew install jq)
-#   - Il tuo progetto deve avere: Dockerfile, api.py, config.py, embeddings.py, init_db.py
-# =============================================================================
+#   Il tuo progetto deve avere: Dockerfile, api.py, config.py, embeddings.py, init_db.py, chat_ui.html# =============================================================================
 
 set -e  # Esci subito se un comando fallisce
 

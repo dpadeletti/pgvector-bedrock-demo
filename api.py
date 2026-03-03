@@ -26,22 +26,32 @@ from embeddings import get_embedding
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     limit: int = Field(5, ge=1, le=50)
+    hybrid: bool = Field(
+        True,
+        description="Se True usa ricerca ibrida (semantica + full-text BM25 via RRF). "
+                    "Se False usa solo ricerca semantica pgvector."
+    )
 
     class Config:
-        json_schema_extra = {"example": {"query": "machine learning", "limit": 5}}
+        json_schema_extra = {
+            "example": {"query": "machine learning", "limit": 5, "hybrid": True}
+        }
 
 
 class SearchResult(BaseModel):
     id: int
     content: str
     similarity: float
-    metadata: Optional[dict] = None
+    rank_score: Optional[float] = None   # RRF score (solo modalita ibrida)
+    match_type: Optional[str]   = None   # "semantic" | "fulltext" | "both"
+    metadata: Optional[dict]    = None
 
 
 class SearchResponse(BaseModel):
     query: str
     results: List[SearchResult]
     count: int
+    search_mode: str   # "hybrid" | "semantic"
     timestamp: str
 
 
@@ -220,6 +230,99 @@ def call_llm(question: str, context_chunks: list, model_id: str) -> str:
 
 
 # ============================================================================
+# Hybrid Retrieval — Reciprocal Rank Fusion (RRF)
+# ============================================================================
+
+def hybrid_retrieve(query: str, query_embedding: list, limit: int) -> list:
+    """
+    Ricerca ibrida: combina risultati semantici (pgvector) e full-text (tsvector)
+    usando Reciprocal Rank Fusion (RRF).
+
+    Formula RRF: score(doc) = sum( 1 / (k + rank_i) )  con k=60 (standard)
+
+    Flusso:
+      1. Semantic: top-(limit*4) via cosine similarity pgvector
+      2. Full-text: top-(limit*4) via ts_rank PostgreSQL (config 'simple')
+      3. RRF: merge scores, ordina, restituisce top-limit
+
+    Vantaggi rispetto a solo semantica:
+      - Cattura query corte/keyword ("HNSW", "Adam optimizer") dove il
+        full-text e superiore
+      - Robusto su termini tecnici/nomi propri non ben rappresentati
+        negli embedding space
+    """
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    k    = 60          # RRF constant — standard value
+    pool = limit * 4   # candidati iniziali per lista
+
+    # --- Lista 1: Semantic (pgvector cosine) ---
+    cur.execute(
+        """
+        SELECT id, content, metadata,
+               1 - (embedding <=> %s::vector) AS score
+        FROM documents
+        ORDER BY score DESC
+        LIMIT %s
+        """,
+        (query_embedding, pool)
+    )
+    semantic_rows = cur.fetchall()
+
+    # --- Lista 2: Full-text (ts_rank su tsvector) ---
+    # plainto_tsquery gestisce query multiparola senza operatori booleani
+    # config 'simple' funziona per IT e EN senza stemming aggressivo
+    cur.execute(
+        """
+        SELECT id, content, metadata,
+               ts_rank(content_tsv, plainto_tsquery('simple', %s)) AS score
+        FROM documents
+        WHERE content_tsv @@ plainto_tsquery('simple', %s)
+        ORDER BY score DESC
+        LIMIT %s
+        """,
+        (query, query, pool)
+    )
+    fulltext_rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    # --- RRF Merge ---
+    rrf_scores  = {}   # doc_id -> rrf_score
+    doc_data    = {}   # doc_id -> (content, metadata, best_semantic_score)
+    match_types = {}   # doc_id -> set of match types
+
+    for rank, (doc_id, content, metadata, score) in enumerate(semantic_rows, start=1):
+        rrf_scores[doc_id]  = rrf_scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+        doc_data[doc_id]    = (content, metadata, float(score))
+        match_types[doc_id] = {"semantic"}
+
+    for rank, (doc_id, content, metadata, score) in enumerate(fulltext_rows, start=1):
+        rrf_scores[doc_id]  = rrf_scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+        match_types[doc_id] = match_types.get(doc_id, set()) | {"fulltext"}
+        if doc_id not in doc_data:
+            doc_data[doc_id] = (content, metadata, 0.0)
+
+    # Ordina per RRF score decrescente
+    ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+
+    results = []
+    for doc_id, rrf_score in ranked:
+        content, metadata, sem_score = doc_data[doc_id]
+        meta = metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else {})
+        mtype = match_types.get(doc_id, set())
+        results.append({
+            "id":         doc_id,
+            "content":    content,
+            "similarity": sem_score,
+            "rank_score": round(rrf_score, 6),
+            "match_type": "both" if len(mtype) == 2 else list(mtype)[0],
+            "metadata":   meta,
+        })
+    return results
+
+
+# ============================================================================
 # Endpoints
 # ============================================================================
 
@@ -266,36 +369,60 @@ async def health_check():
 
 @app.post("/search", response_model=SearchResponse, tags=["Search"])
 async def search_documents(request: SearchRequest):
-    """Ricerca semantic tramite similarita coseno (pgvector <=>)."""
+    """
+    Ricerca documenti.
+
+    - **hybrid=true** (default): combina ricerca semantica (pgvector cosine) e
+      full-text (PostgreSQL tsvector) via Reciprocal Rank Fusion. Ottimale per
+      query miste testo/keyword.
+    - **hybrid=false**: solo ricerca semantica pgvector. Piu veloce, preferibile
+      per query in linguaggio naturale puro.
+
+    Il campo **match_type** nel risultato indica se il documento e stato trovato
+    da "semantic", "fulltext" o "both".
+    """
     try:
         query_embedding = get_embedding(request.query)
-        conn = get_db_connection()
-        cur  = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, content, metadata,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM documents
-            ORDER BY similarity DESC
-            LIMIT %s
-            """,
-            (query_embedding, request.limit)
-        )
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
 
-        results = [
-            {
-                "id":         doc_id,
-                "content":    content,
-                "similarity": float(similarity),
-                "metadata":   metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else None)
-            }
-            for doc_id, content, metadata, similarity in rows
-        ]
-        return {"query": request.query, "results": results, "count": len(results),
-                "timestamp": datetime.utcnow().isoformat()}
+        if request.hybrid:
+            results = hybrid_retrieve(request.query, query_embedding, request.limit)
+            mode    = "hybrid"
+        else:
+            conn = get_db_connection()
+            cur  = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, content, metadata,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM documents
+                ORDER BY similarity DESC
+                LIMIT %s
+                """,
+                (query_embedding, request.limit)
+            )
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            results = [
+                {
+                    "id":         doc_id,
+                    "content":    content,
+                    "similarity": float(similarity),
+                    "rank_score": None,
+                    "match_type": "semantic",
+                    "metadata":   metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else None)
+                }
+                for doc_id, content, metadata, similarity in rows
+            ]
+            mode = "semantic"
+
+        return {
+            "query":       request.query,
+            "results":     results,
+            "count":       len(results),
+            "search_mode": mode,
+            "timestamp":   datetime.utcnow().isoformat()
+        }
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -321,22 +448,8 @@ async def chat(request: ChatRequest):
         # Step 1 -- embedding domanda
         query_embedding = get_embedding(request.question)
 
-        # Step 2 -- chunk piu rilevanti
-        conn = get_db_connection()
-        cur  = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, content, metadata,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM documents
-            ORDER BY similarity DESC
-            LIMIT %s
-            """,
-            (query_embedding, request.limit)
-        )
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        # Step 2 -- recupera chunk rilevanti (ricerca ibrida RRF)
+        rows = hybrid_retrieve(request.question, query_embedding, request.limit)
 
         if not rows:
             raise HTTPException(
@@ -347,19 +460,22 @@ async def chat(request: ChatRequest):
         context_chunks = []
         sources        = []
 
-        for doc_id, content, metadata, similarity in rows:
-            meta = metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else {})
+        for row in rows:
+            doc_id   = row["id"]
+            content  = row["content"]
+            meta     = row["metadata"] or {}
+            sim      = row["similarity"]
             context_chunks.append({
                 "content":    content,
                 "title":      meta.get("title", "Unknown"),
                 "url":        meta.get("url"),
-                "similarity": float(similarity),
+                "similarity": sim,
             })
             sources.append(ChatSource(
                 id          = doc_id,
                 title       = meta.get("title", "Unknown"),
                 url         = meta.get("url"),
-                similarity  = float(similarity),
+                similarity  = sim,
                 chunk_index = meta.get("chunk_index", 0),
             ))
 
