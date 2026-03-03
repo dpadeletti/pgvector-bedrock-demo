@@ -31,10 +31,15 @@ class SearchRequest(BaseModel):
         description="Se True usa ricerca ibrida (semantica + full-text BM25 via RRF). "
                     "Se False usa solo ricerca semantica pgvector."
     )
+    rerank: bool = Field(
+        False,
+        description="Se True applica reranking LLM (Nova Micro) sui candidati. "
+                    "Migliora la qualita ma aggiunge ~1s di latenza."
+    )
 
     class Config:
         json_schema_extra = {
-            "example": {"query": "machine learning", "limit": 5, "hybrid": True}
+            "example": {"query": "machine learning", "limit": 5, "hybrid": True, "rerank": False}
         }
 
 
@@ -51,7 +56,7 @@ class SearchResponse(BaseModel):
     query: str
     results: List[SearchResult]
     count: int
-    search_mode: str   # "hybrid" | "semantic"
+    search_mode: str   # "hybrid" | "hybrid+rerank" | "semantic"
     timestamp: str
 
 
@@ -106,6 +111,10 @@ class HealthResponse(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(..., description="Domanda in linguaggio naturale", min_length=3)
     limit: int    = Field(5, description="Chunk di contesto da usare", ge=1, le=10)
+    rerank: bool  = Field(
+        True,
+        description="Se True applica reranking LLM prima di passare il contesto al modello."
+    )
     model_id: str = Field(
         "amazon.nova-lite-v1:0",
         description="Modello Bedrock"
@@ -134,6 +143,7 @@ class ChatResponse(BaseModel):
     sources: List[ChatSource]
     model_id: str
     context_chunks: int
+    reranked: bool
     timestamp: str
 
 
@@ -322,6 +332,82 @@ def hybrid_retrieve(query: str, query_embedding: list, limit: int) -> list:
     return results
 
 
+
+# ============================================================================
+# Reranking -- LLM-based Cross-Encoder (Nova Micro)
+# ============================================================================
+
+def rerank_with_llm(query: str, candidates: list, top_k: int) -> list:
+    """
+    Reranking dei candidati con Nova Micro come cross-encoder leggero.
+
+    Flusso:
+    - Invia query + tutti i chunk numerati in UNA sola chiamata Bedrock
+    - Nova Micro restituisce un array JSON di indici ordinati per rilevanza
+    - Riordina candidates secondo quegli indici, ritorna top_k
+
+    Vantaggi sul solo RRF:
+    - Capisce il significato della query (sinonimi, parafrasi, contesto)
+    - Disambigua query ambigue
+    - Usa Nova Micro (modello piu leggero) per minimizzare latenza e costo
+
+    Fallback silenzioso: se la chiamata LLM fallisce, ritorna
+    i candidati nell ordine RRF originale senza errori.
+    """
+    import re as _re
+
+    if not candidates:
+        return candidates
+
+    chunks_text = ""
+    for i, c in enumerate(candidates):
+        snippet = c["content"][:300].replace("\n", " ").strip()
+        chunks_text += f"[{i}] {snippet}\n\n"
+
+    prompt = (
+        f'You are a relevance ranking assistant.\n\n'
+        f'Query: "{query}"\n\n'
+        f'Below are {len(candidates)} text chunks labeled [0] to [{len(candidates)-1}].\n'
+        f'Return ONLY a JSON array of indices ordered from MOST to LEAST relevant.\n'
+        f'Include ALL indices. Example: [3, 0, 7, 1, 2]\n\n'
+        f'Chunks:\n{chunks_text}\n'
+        f'Return only the JSON array, nothing else.'
+    )
+
+    try:
+        bedrock = boto3.client(
+            "bedrock-runtime",
+            region_name=os.environ.get("AWS_REGION", "eu-north-1")
+        )
+        body = json.dumps({
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "inferenceConfig": {"max_new_tokens": 256, "temperature": 0.0}
+        })
+        response   = bedrock.invoke_model(modelId="amazon.nova-micro-v1:0", body=body)
+        raw        = json.loads(response["body"].read())
+        raw_text   = raw["output"]["message"]["content"][0]["text"].strip()
+
+        match = _re.search(r'\[([\d,\s]+)\]', raw_text)
+        if not match:
+            return candidates[:top_k]
+
+        indices = [int(x.strip()) for x in match.group(1).split(",") if x.strip().isdigit()]
+
+        seen, valid = set(), []
+        for idx in indices:
+            if 0 <= idx < len(candidates) and idx not in seen:
+                valid.append(idx)
+                seen.add(idx)
+        for i in range(len(candidates)):
+            if i not in seen:
+                valid.append(i)
+
+        return [candidates[i] for i in valid][:top_k]
+
+    except Exception:
+        return candidates[:top_k]
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -416,6 +502,11 @@ async def search_documents(request: SearchRequest):
             ]
             mode = "semantic"
 
+        # Reranking opzionale
+        if request.rerank and results:
+            results = rerank_with_llm(request.query, results, request.limit)
+            mode    = "hybrid+rerank"
+
         return {
             "query":       request.query,
             "results":     results,
@@ -479,7 +570,27 @@ async def chat(request: ChatRequest):
                 chunk_index = meta.get("chunk_index", 0),
             ))
 
-        # Step 3 -- LLM RAG
+        # Step 3 -- Reranking opzionale
+        if request.rerank and len(rows) > 1:
+            rows = rerank_with_llm(request.question, rows, len(rows))
+            context_chunks, sources = [], []
+            for row in rows:
+                meta = row["metadata"] or {}
+                context_chunks.append({
+                    "content":    row["content"],
+                    "title":      meta.get("title", "Unknown"),
+                    "url":        meta.get("url"),
+                    "similarity": row["similarity"],
+                })
+                sources.append(ChatSource(
+                    id          = row["id"],
+                    title       = meta.get("title", "Unknown"),
+                    url         = meta.get("url"),
+                    similarity  = row["similarity"],
+                    chunk_index = meta.get("chunk_index", 0),
+                ))
+
+        # Step 4 -- LLM RAG
         answer = call_llm(request.question, context_chunks, request.model_id)
 
         return ChatResponse(
@@ -488,6 +599,7 @@ async def chat(request: ChatRequest):
             sources        = sources,
             model_id       = request.model_id,
             context_chunks = len(context_chunks),
+            reranked       = request.rerank,
             timestamp      = datetime.utcnow().isoformat()
         )
 
