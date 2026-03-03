@@ -36,10 +36,15 @@ class SearchRequest(BaseModel):
         description="Se True applica reranking LLM (Nova Micro) sui candidati. "
                     "Migliora la qualita ma aggiunge ~1s di latenza."
     )
+    expand: bool = Field(
+        False,
+        description="Se True genera 3 riformulazioni della query (Nova Micro) "
+                    "ed esegue ricerche parallele. Aumenta la copertura semantica."
+    )
 
     class Config:
         json_schema_extra = {
-            "example": {"query": "machine learning", "limit": 5, "hybrid": True, "rerank": False}
+            "example": {"query": "machine learning", "limit": 5, "hybrid": True, "rerank": False, "expand": False}
         }
 
 
@@ -56,7 +61,7 @@ class SearchResponse(BaseModel):
     query: str
     results: List[SearchResult]
     count: int
-    search_mode: str   # "hybrid" | "hybrid+rerank" | "semantic"
+    search_mode: str   # "hybrid" | "hybrid+rerank" | "hybrid+expand" | "hybrid+expand+rerank" | "semantic"
     timestamp: str
 
 
@@ -114,6 +119,10 @@ class ChatRequest(BaseModel):
     rerank: bool  = Field(
         True,
         description="Se True applica reranking LLM prima di passare il contesto al modello."
+    )
+    expand: bool  = Field(
+        False,
+        description="Se True espande la query con varianti prima del retrieval."
     )
     model_id: str = Field(
         "amazon.nova-lite-v1:0",
@@ -408,6 +417,197 @@ def rerank_with_llm(query: str, candidates: list, top_k: int) -> list:
         return candidates[:top_k]
 
 
+
+# ============================================================================
+# Query Expansion -- genera varianti della query con Nova Micro
+# ============================================================================
+
+def expand_query(query: str) -> list:
+    """
+    Genera 3 riformulazioni della query originale usando Nova Micro.
+
+    Obiettivo: aumentare la copertura semantica del retrieval catturando
+    documenti rilevanti che usano terminologia diversa dalla query originale.
+
+    Esempi:
+      "backpropagation gradient descent"
+        → "how neural networks learn using chain rule"
+        → "weight update algorithm in deep learning training"
+        → "error propagation optimization for neural network weights"
+
+    Ritorna: [query_originale, variante1, variante2, variante3]
+    Fallback: se la chiamata LLM fallisce, ritorna solo [query_originale]
+    """
+    prompt = (
+        f'Generate 3 alternative phrasings of this search query that cover different\n'
+        f'aspects and terminology, to maximize document retrieval coverage.\n\n'
+        f'Original query: "{query}"\n\n'
+        f'Return ONLY a JSON array of 3 strings, no explanation.\n'
+        f'Example: ["phrasing 1", "phrasing 2", "phrasing 3"]\n'
+        f'The phrasings should be in the same language as the original query.'
+    )
+
+    try:
+        import re as _re
+        bedrock = boto3.client(
+            "bedrock-runtime",
+            region_name=os.environ.get("AWS_REGION", "eu-north-1")
+        )
+        body = json.dumps({
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "inferenceConfig": {"max_new_tokens": 128, "temperature": 0.7}
+        })
+        response = bedrock.invoke_model(modelId="amazon.nova-micro-v1:0", body=body)
+        raw      = json.loads(response["body"].read())
+        text     = raw["output"]["message"]["content"][0]["text"].strip()
+
+        # Estrai array JSON dalla risposta
+        match = _re.search(r'\[(.+?)\]', text, _re.DOTALL)
+        if not match:
+            return [query]
+
+        # Parse manuale robusto: split su virgole tra virgolette
+        inner   = match.group(1)
+        strings = _re.findall(r'"([^"]+)"', inner)
+
+        if not strings:
+            return [query]
+
+        # Rimuovi duplicati e la query originale se presente, poi anteponi originale
+        seen = {query.lower()}
+        variants = []
+        for s in strings[:3]:
+            if s.lower() not in seen:
+                variants.append(s)
+                seen.add(s.lower())
+
+        return [query] + variants
+
+    except Exception:
+        return [query]
+
+
+def hybrid_retrieve_expanded(query: str, query_embedding: list,
+                              limit: int, n_variants: int = 3) -> list:
+    """
+    Retrieval ibrido con query expansion.
+
+    Flusso:
+    1. Genera N varianti della query con expand_query()
+    2. Per ogni variante genera embedding e esegue hybrid_retrieve() con pool ridotto
+    3. Applica RRF su tutte le liste combinate (originale + varianti)
+    4. Ritorna top-limit risultati unificati
+
+    Il pool per variante e ridotto (limit*2 invece di limit*4) per bilanciare
+    il numero totale di candidati e la latenza aggiuntiva.
+    """
+    queries = expand_query(query)
+
+    # Genera embedding per le varianti (la query originale ce l ha gia)
+    embeddings = [query_embedding]
+    bedrock_emb = boto3.client(
+        "bedrock-runtime",
+        region_name=os.environ.get("AWS_REGION", "eu-north-1")
+    )
+    for variant in queries[1:]:
+        try:
+            emb = get_embedding(variant)
+            embeddings.append(emb)
+        except Exception:
+            pass  # Salta la variante se embedding fallisce
+
+    # Retrieval per ogni query (pool piu piccolo per bilanciare latenza)
+    pool_per_query = max(limit * 2, 10)
+    all_lists      = []
+
+    conn = get_db_connection()
+    cur  = conn.cursor()
+
+    for i, (q, emb) in enumerate(zip(queries, embeddings)):
+        k = 60
+
+        # Semantic
+        cur.execute(
+            """
+            SELECT id, content, metadata,
+                   1 - (embedding <=> %s::vector) AS score
+            FROM documents
+            ORDER BY score DESC
+            LIMIT %s
+            """,
+            (emb, pool_per_query)
+        )
+        sem_rows = cur.fetchall()
+
+        # Full-text
+        cur.execute(
+            """
+            SELECT id, content, metadata,
+                   ts_rank(content_tsv, plainto_tsquery('simple', %s)) AS score
+            FROM documents
+            WHERE content_tsv @@ plainto_tsquery('simple', %s)
+            ORDER BY score DESC
+            LIMIT %s
+            """,
+            (q, q, pool_per_query)
+        )
+        ft_rows = cur.fetchall()
+
+        # RRF per questa query
+        rrf_q = {}
+        doc_q = {}
+        match_q = {}
+
+        for rank, (doc_id, content, metadata, score) in enumerate(sem_rows, 1):
+            rrf_q[doc_id]   = rrf_q.get(doc_id, 0.0) + 1.0 / (k + rank)
+            doc_q[doc_id]   = (content, metadata, float(score))
+            match_q[doc_id] = {"semantic"}
+
+        for rank, (doc_id, content, metadata, score) in enumerate(ft_rows, 1):
+            rrf_q[doc_id]   = rrf_q.get(doc_id, 0.0) + 1.0 / (k + rank)
+            match_q[doc_id] = match_q.get(doc_id, set()) | {"fulltext"}
+            if doc_id not in doc_q:
+                doc_q[doc_id] = (content, metadata, 0.0)
+
+        all_lists.append((rrf_q, doc_q, match_q))
+
+    cur.close()
+    conn.close()
+
+    # Merge RRF globale su tutte le liste
+    # Peso leggermente maggiore alla query originale (lista 0)
+    weights = [1.0] + [0.8] * (len(all_lists) - 1)
+    global_rrf  = {}
+    global_data = {}
+    global_match = {}
+
+    for (rrf_q, doc_q, match_q), w in zip(all_lists, weights):
+        # Converti i punteggi RRF di questa lista in ranking, poi applica RRF globale
+        ranked = sorted(rrf_q.items(), key=lambda x: x[1], reverse=True)
+        for rank, (doc_id, _) in enumerate(ranked, 1):
+            global_rrf[doc_id]  = global_rrf.get(doc_id, 0.0) + w / (60 + rank)
+            global_match[doc_id] = global_match.get(doc_id, set()) | match_q.get(doc_id, set())
+            if doc_id not in global_data:
+                global_data[doc_id] = doc_q[doc_id]
+
+    # Top-limit finale
+    ranked_final = sorted(global_rrf.items(), key=lambda x: x[1], reverse=True)[:limit]
+    results = []
+    for doc_id, rrf_score in ranked_final:
+        content, metadata, sem_score = global_data[doc_id]
+        meta  = metadata if isinstance(metadata, dict) else (json.loads(metadata) if metadata else {})
+        mtype = global_match.get(doc_id, set())
+        results.append({
+            "id":         doc_id,
+            "content":    content,
+            "similarity": sem_score,
+            "rank_score": round(rrf_score, 6),
+            "match_type": "both" if len(mtype) == 2 else list(mtype)[0],
+            "metadata":   meta,
+        })
+    return results
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -471,8 +671,14 @@ async def search_documents(request: SearchRequest):
         query_embedding = get_embedding(request.query)
 
         if request.hybrid:
-            results = hybrid_retrieve(request.query, query_embedding, request.limit)
-            mode    = "hybrid"
+            if request.expand:
+                results = hybrid_retrieve_expanded(
+                    request.query, query_embedding, request.limit
+                )
+                mode = "hybrid+expand"
+            else:
+                results = hybrid_retrieve(request.query, query_embedding, request.limit)
+                mode    = "hybrid"
         else:
             conn = get_db_connection()
             cur  = conn.cursor()
@@ -505,7 +711,7 @@ async def search_documents(request: SearchRequest):
         # Reranking opzionale
         if request.rerank and results:
             results = rerank_with_llm(request.query, results, request.limit)
-            mode    = "hybrid+rerank"
+            mode    = mode + "+rerank"
 
         return {
             "query":       request.query,
@@ -539,8 +745,13 @@ async def chat(request: ChatRequest):
         # Step 1 -- embedding domanda
         query_embedding = get_embedding(request.question)
 
-        # Step 2 -- recupera chunk rilevanti (ricerca ibrida RRF)
-        rows = hybrid_retrieve(request.question, query_embedding, request.limit)
+        # Step 2 -- recupera chunk rilevanti (hybrid + opzionale query expansion)
+        if request.expand:
+            rows = hybrid_retrieve_expanded(
+                request.question, query_embedding, request.limit
+            )
+        else:
+            rows = hybrid_retrieve(request.question, query_embedding, request.limit)
 
         if not rows:
             raise HTTPException(
