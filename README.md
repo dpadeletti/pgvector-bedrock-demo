@@ -9,17 +9,19 @@ Sistema completo di **semantic search + RAG chat** con pgvector su AWS RDS, embe
 
 ## Cosa fa questo progetto
 
-Sistema end-to-end di RAG (Retrieval-Augmented Generation) che:
+Sistema end-to-end di RAG (Retrieval-Augmented Generation) con pipeline di retrieval avanzata:
 
 - Salva embeddings vettoriali (1024 dimensioni) in PostgreSQL con pgvector + indice HNSW
 - Genera embeddings con AWS Bedrock Titan Embeddings V2
-- Ricerca documenti simili via similarità coseno (operatore pgvector `<=>`)
-- Risponde a domande in linguaggio naturale (IT/EN) usando i documenti come contesto (RAG)
+- **Hybrid search**: combina ricerca semantica (pgvector cosine) e full-text (PostgreSQL tsvector) via Reciprocal Rank Fusion
+- **Reranking**: riordina i candidati con Nova Micro come cross-encoder per massimizzare la rilevanza
+- **Query expansion**: genera 3 varianti della query con Nova Micro per aumentare la copertura semantica
+- Risponde a domande in IT/EN usando i documenti come contesto (RAG) via Amazon Nova Lite
 - Chat UI dark terminal servita direttamente dall'API su `/`
 - REST API con FastAPI deployata su AWS ECS Fargate
 - CI/CD automatizzato con GitHub Actions (push → test → ECR → ECS)
 - Secrets gestiti con AWS Secrets Manager
-- 1928 chunk Wikipedia su AI/ML/Data Science (EN + IT) con indice HNSW
+- **16.667 chunk**: Wikipedia (250 topic EN + 50 IT) + arXiv (10K abstract ML/AI)
 
 ## Prerequisiti
 
@@ -52,11 +54,12 @@ Sistema end-to-end di RAG (Retrieval-Augmented Generation) che:
                          │   Chat UI su /               │
                          └──────┬──────────────┬────────┘
                                 │              │
-                    ┌───────────▼──┐    ┌──────▼───────────────┐
-                    │  RDS         │    │  Bedrock              │
-                    │  pgvector    │    │  Titan V2 (embed)     │
-                    │  HNSW index  │    │  Nova Lite (LLM/RAG)  │
-                    │  1928 chunk  │    └──────────────────────┘
+                    ┌───────────▼──┐    ┌──────▼───────────────────┐
+                    │  RDS         │    │  Bedrock                  │
+                    │  pgvector    │    │  Titan V2   (embeddings)  │
+                    │  HNSW index  │    │  Nova Micro (rerank+expand)│
+                    │  tsvector    │    │  Nova Lite  (RAG answer)  │
+                    │  16.667 docs │    └──────────────────────────┘
                     └──────────────┘
                          +
                     ┌──────────────┐
@@ -65,6 +68,42 @@ Sistema end-to-end di RAG (Retrieval-Augmented Generation) che:
                     │ (DB_PASSWORD)│
                     └──────────────┘
 ```
+
+## Pipeline RAG completa
+
+```
+Query utente
+      │
+      ├─► [expand=true] Nova Micro genera 3 varianti della query
+      │
+      ▼
+Embedding (Titan V2) per query + varianti
+      │
+      ▼
+Hybrid Retrieve (per ogni query)
+  ├── Semantic:  pgvector cosine similarity  →  top-N chunk
+  └── Full-text: PostgreSQL tsvector rank    →  top-N chunk
+      │
+      ▼
+RRF Merge — Reciprocal Rank Fusion su tutte le liste
+      │
+      ├─► [rerank=true] Nova Micro riordina per rilevanza semantica
+      │
+      ▼
+Top-K chunk → Prompt con contesto numerato [1]...[K]
+      │
+      ▼
+Nova Lite → risposta in IT/EN con citazioni + fonti Wikipedia/arXiv
+```
+
+**Modalità search_mode** nella risposta:
+| Modalità | Parametri |
+|----------|-----------|
+| `semantic` | `hybrid=false` |
+| `hybrid` | `hybrid=true` |
+| `hybrid+rerank` | `hybrid=true, rerank=true` |
+| `hybrid+expand` | `hybrid=true, expand=true` |
+| `hybrid+expand+rerank` | `hybrid=true, expand=true, rerank=true` |
 
 ## Quick Start (locale)
 
@@ -83,19 +122,27 @@ cp .env.example .env
 # Inserisci endpoint RDS, password, region
 
 # 4. Inizializza DB
-python init_db.py
+python3 init_db.py
 
-# 5. Popola con Wikipedia (63 topic AI/ML, ~1900 chunk, ~15-20 min)
-pip install tqdm
-python populate_db.py
+# 5. Migrazione hybrid search (tsvector + indice GIN)
+psql -h YOUR-RDS-ENDPOINT -U postgres -d postgres -f migrate_hybrid_search.sql
 
-# 6. Crea indice HNSW (dopo popolamento)
-psql -h YOUR-RDS-ENDPOINT -U postgres -d postgres -f create_hnsw_index.sql
+# 6. Popola il DB (Wikipedia + arXiv)
+python3 populate_db.py --source wikipedia
+python3 populate_db.py --source arxiv --arxiv-limit 10000
 
-# 7. Avvia API
+# 7. Ricrea indice HNSW dopo popolamento
+psql -h YOUR-RDS-ENDPOINT -U postgres -d postgres << 'SQL'
+DROP INDEX IF EXISTS documents_embedding_hnsw_idx;
+CREATE INDEX documents_embedding_hnsw_idx
+  ON documents USING hnsw (embedding vector_cosine_ops)
+  WITH (m=16, ef_construction=64);
+SQL
+
+# 8. Avvia API
 uvicorn api:app --reload
-# → http://localhost:8000  (Chat UI)
-# → http://localhost:8000/docs  (Swagger)
+# → http://localhost:8000        (Chat UI)
+# → http://localhost:8000/docs   (Swagger)
 ```
 
 ## API Live
@@ -109,16 +156,22 @@ GET  /docs      → Swagger UI
 GET  /stats     → Statistiche documenti
 GET  /documents → Lista documenti (paginata)
 POST /documents → Crea nuovo documento con embedding
-POST /search    → Ricerca semantica
-POST /chat      → RAG chat (domanda → retrieval → LLM → risposta + fonti)
+POST /search    → Ricerca ibrida (semantic + fulltext + rerank + expand)
+POST /chat      → RAG chat
 ```
 
-### Esempio ricerca semantica
+### Esempio ricerca ibrida completa
 
 ```bash
 curl -X POST http://pgvector-alb-1618965750.eu-north-1.elb.amazonaws.com/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "machine learning", "limit": 3}'
+  -d '{
+    "query": "LoRA fine-tuning large language models",
+    "limit": 5,
+    "hybrid": true,
+    "rerank": true,
+    "expand": false
+  }'
 ```
 
 ### Esempio RAG chat
@@ -126,68 +179,52 @@ curl -X POST http://pgvector-alb-1618965750.eu-north-1.elb.amazonaws.com/search 
 ```bash
 curl -X POST http://pgvector-alb-1618965750.eu-north-1.elb.amazonaws.com/chat \
   -H "Content-Type: application/json" \
-  -d '{"question": "Come funziona il machine learning?", "limit": 5}'
+  -d '{
+    "question": "Come funziona il machine learning?",
+    "limit": 5,
+    "rerank": true,
+    "expand": false
+  }'
 ```
 
-La risposta include `answer` (testo LLM), `sources` (chunk usati con titolo, URL, similarity score) e `model_id`.
+La risposta include `answer`, `sources` (titolo, URL, similarity), `model_id`, `reranked`, `search_mode`.
 
-## Come funziona il RAG
+## Modelli Bedrock
 
-```
-Domanda utente
-      │
-      ▼
-Embedding (Titan V2)
-      │
-      ▼
-Ricerca pgvector HNSW  ──→  Top-5 chunk più simili
-      │
-      ▼
-Prompt = system + contesto numerato [1]...[5] + domanda
-      │
-      ▼
-Amazon Nova Lite (via Bedrock)
-      │
-      ▼
-Risposta in IT/EN con citazioni [1], [2], ecc. + fonti linkate
-```
+| Modello | Uso nel sistema | Note |
+|---------|----------------|------|
+| `amazon.titan-embed-text-v2:0` | Embeddings (sempre) | 1024 dim |
+| `amazon.nova-micro-v1:0` | Reranking + Query expansion | Veloce, economico |
+| `amazon.nova-lite-v1:0` | RAG answer (default) | Bilanciato |
+| `amazon.nova-pro-v1:0` | RAG answer (opzionale) | Più preciso |
+| `anthropic.claude-3-haiku-20240307-v1:0` | RAG answer (opzionale) | Richiede approvazione Bedrock |
 
-**Modelli supportati** (selezionabili dalla UI):
-| Modello | Uso | Note |
-|---------|-----|------|
-| `amazon.nova-lite-v1:0` | Default | Veloce, economico |
-| `amazon.nova-micro-v1:0` | Più veloce | Risposte più brevi |
-| `amazon.nova-pro-v1:0` | Più preciso | Costo maggiore |
-| `anthropic.claude-3-haiku-20240307-v1:0` | Opzionale | Richiede approvazione Anthropic su Bedrock |
+## Sorgenti dati
 
-## Indice HNSW
+| Sorgente | Chunk | Lingua | Contenuto |
+|----------|-------|--------|-----------|
+| Wikipedia EN | ~5.500 | EN | 250 topic AI/ML/NLP/MLOps |
+| Wikipedia IT | ~1.200 | IT | 50 topic AI/ML |
+| arXiv | ~10.000 | EN | Abstract paper cs.LG, cs.AI, cs.NE, cs.CL, cs.CV, stat.ML |
+| **Totale** | **~16.700** | | |
 
-Dopo aver popolato il database con 1000+ documenti, crea l'indice HNSW per ricerche in O(log n):
+## Popolamento DB
 
 ```bash
-psql -h YOUR-RDS-ENDPOINT -U postgres -d postgres -f create_hnsw_index.sql
+# Wikipedia
+python3 populate_db.py --source wikipedia           # tutti i topic
+python3 populate_db.py --source wikipedia --lang en  # solo EN
+python3 populate_db.py --source wikipedia --limit 5  # test rapido
+
+# arXiv
+python3 populate_db.py --source arxiv --arxiv-limit 10000  # ~10K paper
+python3 populate_db.py --source arxiv --arxiv-limit 200    # test rapido
+
+# Tutto insieme
+python3 populate_db.py --source all --dry-run  # stima senza inserire
 ```
 
-Parametri usati: `m=16` (connessioni per nodo), `ef_construction=64` (qualità build), `vector_cosine_ops`.
-
-## Popolamento DB (Wikipedia)
-
-```bash
-# Preview (dry run)
-python populate_db.py --dry-run
-
-# Test con 5 topic
-python populate_db.py --limit 5
-
-# Popolamento completo (63 topic, ~15-20 min, resume automatico)
-python populate_db.py
-
-# Solo articoli in italiano
-python populate_db.py --lang it
-```
-
-63 topic su AI, Machine Learning, Deep Learning, NLP, Data Science, MLOps (EN + IT).
-Output: ~1900 chunk · ~5MB · indice HNSW ~46MB totale.
+Resume automatico: i chunk già presenti nel DB vengono saltati via hash.
 
 ## CI/CD
 
@@ -199,7 +236,6 @@ Ogni push su `main` attiva:
 3. Deploy   → ECS force-new-deployment + wait stable
 ```
 
-Configura su un nuovo repo:
 ```
 GitHub → Settings → Secrets → Actions:
   AWS_ACCESS_KEY_ID     → IAM access key
@@ -215,22 +251,24 @@ pgvector-bedrock-demo/
 ├── requirements.txt
 ├── .env.example
 │
-├── api.py               # FastAPI: /search, /chat, /documents, /stats, /health
-├── chat_ui.html         # Chat UI (servita su /)
-├── config.py            # Configurazione DB e AWS
-├── embeddings.py        # Client Bedrock Titan V2
-├── init_db.py           # Crea tabelle + estensione pgvector
-├── populate_db.py       # Popola DB da Wikipedia (63 topic EN/IT)
-├── create_hnsw_index.sql
-│
-├── infra/
-│   ├── setup_aws_infra.sh   # IaC: crea intera infrastruttura da zero
-│   └── INFRA_GUIDE.md       # Guida dettagliata all'architettura
+├── api.py                    # FastAPI: /search, /chat, /documents, /stats, /health
+├── chat_ui.html              # Chat UI dark terminal (servita su /)
+├── config.py                 # Configurazione DB e AWS
+├── embeddings.py             # Client Bedrock Titan V2
+├── init_db.py                # Crea tabelle + estensione pgvector
+├── populate_db.py            # Popola DB da Wikipedia (250 EN+IT) + arXiv (10K)
+├── create_hnsw_index.sql     # Indice HNSW per semantic search veloce
+├── migrate_hybrid_search.sql # Aggiunge tsvector + GIN per full-text search
 │
 ├── tests/
-│   ├── test_api.py
-│   ├── test_client.py
-│   └── manual_test.sh
+│   ├── test_api.py           # Test pytest automatici (CI)
+│   ├── test_rag_quality.py   # Test qualità RAG pipeline (hybrid, rerank, expand)
+│   ├── test_client.py        # Client Python interattivo
+│   └── manual_test.sh        # Test rapidi con curl
+│
+├── infra/
+│   ├── setup_aws_infra.sh    # IaC: crea intera infrastruttura da zero
+│   └── INFRA_GUIDE.md        # Guida dettagliata all'architettura
 │
 └── .github/workflows/deploy.yml
 ```
@@ -256,12 +294,12 @@ AWS_BEDROCK_MODEL_ID=amazon.titan-embed-text-v2:0
 | ECS Fargate | 256 CPU / 512 MB | ~$5 | No |
 | ALB | Load Balancer | ~$16 | No |
 | ECR | Storage immagini | ~$0.50 | No |
-| Bedrock Titan | Embeddings | ~$0.01 per 1000 chunk | Pay per use |
-| Bedrock Nova Lite | Chat RAG | ~$0.0001/1K token | Pay per use |
+| Bedrock Titan | Embeddings | ~$0.01/1K chunk | Pay per use |
+| Bedrock Nova | Chat + Rerank + Expand | ~$0.001/query | Pay per use |
 | Secrets Manager | 1 secret | ~$0.40 | No |
 | **Totale** | | **~$34/mese** | |
 
-Per risparmiare ~$17/mese: stoppa RDS e scala ECS a 0 quando non usi il progetto.
+Per risparmiare ~$17/mese: stoppa RDS e scala ECS a 0.
 
 ```bash
 # Stop
@@ -298,10 +336,10 @@ aws secretsmanager get-secret-value \
 AWS Console → Bedrock → Model access → Richiedi accesso al modello
 ```
 
-**`403 Forbidden` (Wikipedia API)**
-```python
-# Assicurati che populate_db.py includa il header User-Agent nella richiesta requests.get()
-headers = {"User-Agent": "pgvector-bedrock-demo/1.0 (educational project)"}
+**`SyntaxError` con `python populate_db.py`**
+```bash
+# Usa python3, non python (che su Mac è Python 2)
+python3 populate_db.py
 ```
 
 ## Risorse
@@ -309,6 +347,7 @@ headers = {"User-Agent": "pgvector-bedrock-demo/1.0 (educational project)"}
 - [pgvector](https://github.com/pgvector/pgvector)
 - [AWS Bedrock Titan Embeddings](https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html)
 - [Amazon Nova Models](https://docs.aws.amazon.com/bedrock/latest/userguide/amazon-nova.html)
+- [Reciprocal Rank Fusion (paper)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [AWS ECS Fargate](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html)
 
