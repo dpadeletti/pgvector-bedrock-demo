@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>RAG Eval Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Space+Grotesk:wght@400;600;700&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0d1117;--surface:#161b22;--border:#21262d;--border2:#30363d;--text:#e6edf3;--muted:#8b949e;--dim:#c9d1d9;--blue:#4a9eff;--purple:#a78bfa;--green:#34d399;--orange:#fb923c;--red:#f87171}
+body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;min-height:100vh}
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:18px 32px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.logo{font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:700}
+.logo span{color:var(--blue)}
+.logo small{display:block;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);font-weight:300;margin-top:2px}
+.header-right{display:flex;align-items:center;gap:14px}
+.progress-text{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.btn{padding:7px 18px;border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;cursor:pointer;border:none;transition:all .2s}
+.btn-primary{background:#1f6feb;color:#fff;font-weight:600}
+.btn-primary:hover{background:#388bfd}
+.btn-primary:disabled{background:#1f3a5f;color:#8b949e;cursor:not-allowed}
+.btn-danger{background:var(--surface);border:1px solid var(--red);color:var(--red)}
+.btn-danger:hover{background:#2d1a1a}
+main{padding:28px 32px;max-width:1400px}
+.tabs{display:flex;gap:4px;margin-bottom:24px}
+.tab{padding:7px 18px;border-radius:6px;font-size:12px;cursor:pointer;background:none;border:none;color:var(--muted);font-family:'JetBrains Mono',monospace;transition:all .2s}
+.tab:hover{color:var(--dim)}
+.tab.active{background:var(--surface);color:var(--text)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px}
+.card-title{font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;color:var(--dim);margin-bottom:16px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.grid-full{grid-column:1/-1}
+.tag{display:inline-block;padding:1px 8px;border-radius:4px;font-size:10px;font-family:'JetBrains Mono',monospace}
+.sim-bar-wrap{display:flex;align-items:center;gap:8px}
+.sim-bar-track{flex:1;height:5px;background:#1e2433;border-radius:3px;overflow:hidden}
+.sim-bar-fill{height:100%;border-radius:3px;transition:width .8s ease}
+.sim-val{font-family:'JetBrains Mono',monospace;font-size:11px;min-width:40px}
+.query-row{display:grid;grid-template-columns:210px 1fr;gap:16px;align-items:center;padding:10px 8px;border-radius:6px;cursor:pointer;transition:background .15s;margin-bottom:4px}
+.query-row:hover{background:#161b2288}
+.query-label{font-size:11px;color:var(--text);line-height:1.5;margin-bottom:4px}
+.mode-bars{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.mode-bar-label{font-size:10px;margin-bottom:3px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding-bottom:10px;color:var(--muted);font-weight:400;border-bottom:1px solid var(--border)}
+th:not(:first-child){text-align:right}
+td{padding:9px 0;border-bottom:1px solid #21262d22;vertical-align:middle}
+td:not(:first-child){text-align:right;font-family:'JetBrains Mono',monospace}
+.detail-block{border-radius:10px;padding:16px;margin-bottom:12px;animation:fadeIn .3s ease}
+.detail-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.detail-meta{display:flex;gap:14px;font-size:11px;color:var(--muted)}
+.result-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.result-card{background:var(--bg);border-radius:6px;padding:10px;font-size:10px}
+.result-sim{font-family:'JetBrains Mono',monospace;margin-bottom:5px}
+.result-title{color:var(--dim);margin-bottom:6px;line-height:1.5}
+.q-btn{padding:5px 12px;border-radius:5px;font-size:11px;border:1px solid var(--border2);background:var(--surface);color:var(--muted);cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .2s}
+.q-btn:hover,.q-btn.active{border-color:var(--blue);color:var(--blue)}
+.empty{text-align:center;padding:80px 32px;color:var(--muted);animation:fadeIn .5s ease}
+.empty-icon{font-size:44px;margin-bottom:16px}
+.empty-title{font-family:'Space Grotesk',sans-serif;font-size:18px;color:var(--dim);margin-bottom:8px}
+.empty-sub{font-size:12px;max-width:400px;margin:0 auto;line-height:1.8}
+.mode-pills{display:flex;justify-content:center;gap:8px;margin-top:20px;flex-wrap:wrap}
+.spinner{display:flex;gap:5px;align-items:center}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--blue);animation:pulse 1.2s infinite ease-in-out}
+.dot:nth-child(2){animation-delay:.2s}
+.dot:nth-child(3){animation-delay:.4s}
+.lat-notes{margin-top:16px;font-size:11px;color:var(--muted);line-height:2;border-top:1px solid var(--border);padding-top:12px}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--surface)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <div><span>◈</span> RAG Eval Dashboard</div>
+    <small>pgvector · Bedrock · Hybrid · Rerank · Expand</small>
+  </div>
+  <div class="header-right">
+    <div class="progress-text" id="progressText"></div>
+    <button class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopEval()">■ Stop</button>
+    <button class="btn btn-primary" id="runBtn" onclick="runEval()">▶ Run Evaluation</button>
+  </div>
+</header>
+<main>
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('overview')">📊 Overview</button>
+    <button class="tab" onclick="showTab('detail')">🔍 Detail</button>
+    <button class="tab" onclick="showTab('latency')">⏱ Latency</button>
+  </div>
+  <div id="tab-overview">
+    <div id="emptyState" class="empty">
+      <div class="empty-icon">◈</div>
+      <div class="empty-title">RAG Quality Evaluation</div>
+      <div class="empty-sub">Esegue 6 query × 4 modalità e confronta similarity, latency e match quality tra le pipeline.</div>
+      <div class="mode-pills" id="modePills"></div>
+    </div>
+    <div id="overviewContent" style="display:none">
+      <div class="grid-2">
+        <div class="card"><div class="card-title">Top-1 Similarity per Query</div><canvas id="simChart" height="200"></canvas></div>
+        <div class="card"><div class="card-title">Media per Modalità</div><table><thead><tr><th>Modalità</th><th>Avg Sim</th><th>Avg Lat</th><th>Both%</th></tr></thead><tbody id="summaryBody"></tbody></table></div>
+        <div class="card grid-full"><div class="card-title">Similarity per Query — click per dettaglio</div><div id="queryRows"></div></div>
+      </div>
+    </div>
+  </div>
+  <div id="tab-detail" style="display:none">
+    <div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap" id="queryBtns"></div>
+    <div id="detailContent"><div style="color:var(--muted);text-align:center;padding:40px">Seleziona una query sopra</div></div>
+  </div>
+  <div id="tab-latency" style="display:none">
+    <div class="grid-2">
+      <div class="card"><div class="card-title">Latenza per Query (secondi)</div><canvas id="latChart" height="200"></canvas></div>
+      <div class="card"><div class="card-title">Tradeoff Qualità / Velocità</div><table><thead><tr><th>Modalità</th><th>Min</th><th>Max</th><th>Avg</th><th>+overhead</th></tr></thead><tbody id="latBody"></tbody></table><div class="lat-notes">🟢 overhead &lt; 0.5s — trascurabile<br>🟠 overhead &gt; 0.5s — valutare per produzione</div></div>
+    </div>
+  </div>
+</main>
+<script>
+const QUERIES=[{id:"q1",label:"backpropagation gradient descent",category:"Deep Learning"},{id:"q2",label:"LoRA low-rank adaptation fine-tuning",category:"LLM"},{id:"q3",label:"transformer self-attention mechanism",category:"NLP"},{id:"q4",label:"overfitting regularization dropout",category:"ML"},{id:"q5",label:"HNSW approximate nearest neighbor",category:"Search"},{id:"q6",label:"reti neurali apprendimento",category:"IT query"}];
+const MODES=[{key:"semantic",label:"Semantic",params:{hybrid:false,rerank:false,expand:false},color:"#4a9eff"},{key:"hybrid",label:"Hybrid",params:{hybrid:true,rerank:false,expand:false},color:"#a78bfa"},{key:"rerank",label:"H+Rerank",params:{hybrid:true,rerank:true,expand:false},color:"#34d399"},{key:"expand",label:"H+Expand",params:{hybrid:true,rerank:false,expand:true},color:"#fb923c"}];
+let results={},aborted=false,simChart=null,latChart=null,selectedQuery=null,activeTab="overview";
+document.addEventListener("DOMContentLoaded",()=>{
+  const pills=document.getElementById("modePills");
+  MODES.forEach(m=>{const s=document.createElement("span");s.className="tag";s.style.cssText=`background:${m.color}22;color:${m.color};border:1px solid ${m.color}44`;s.textContent=m.label;pills.appendChild(s)});
+  renderQueryBtns();
+});
+function tag(l,c){return `<span class="tag" style="background:${c}22;color:${c};border:1px solid ${c}44">${l}</span>`}
+function simColor(v){return v>0.6?"#34d399":v>0.4?"#4a9eff":v>0.2?"#fb923c":"#f87171"}
+function simBar(v){const p=Math.min(100,v*100),c=simColor(v);return `<div class="sim-bar-wrap"><div class="sim-bar-track"><div class="sim-bar-fill" style="width:${p}%;background:${c}"></div></div><span class="sim-val" style="color:${c}">${v.toFixed(3)}</span></div>`}
+async function doSearch(query,params){
+  const t0=performance.now();
+  const res=await fetch("/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query,limit:5,...params})});
+  if(!res.ok)throw new Error(`HTTP ${res.status}`);
+  const data=await res.json();
+  const lat=((performance.now()-t0)/1000);
+  const top=data.results?.[0]||{};
+  return{similarity:parseFloat((top.similarity||0).toFixed(3)),latency:parseFloat(lat.toFixed(2)),search_mode:data.search_mode,both_count:data.results?.filter(r=>r.match_type==="both").length||0,top_title:top.metadata?.title||"—",top_source:top.metadata?.source||"—",results:data.results||[]};
+}
+async function runEval(){
+  aborted=false;results={};
+  document.getElementById("runBtn").disabled=true;
+  document.getElementById("stopBtn").style.display="inline-block";
+  document.getElementById("emptyState").style.display="none";
+  document.getElementById("overviewContent").style.display="none";
+  const total=QUERIES.length*MODES.length;let done=0;
+  for(const q of QUERIES){
+    results[q.id]={};
+    for(const m of MODES){
+      if(aborted)break;
+      document.getElementById("progressText").innerHTML=`<span class="spinner"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span><span style="margin-left:8px">${done}/${total} — ${q.label.slice(0,28)}… [${m.label}]</span>`;
+      try{results[q.id][m.key]=await doSearch(q.label,m.params)}
+      catch(e){results[q.id][m.key]={similarity:0,latency:0,both_count:0,results:[],error:e.message}}
+      done++;
+      if(activeTab==="overview")renderOverview();
+      await new Promise(r=>setTimeout(r,700));
+    }
+    if(aborted)break;
+  }
+  document.getElementById("progressText").textContent=aborted?`Interrotto — ${done} query`:`✓ ${done} query completate`;
+  document.getElementById("runBtn").disabled=false;
+  document.getElementById("stopBtn").style.display="none";
+  renderOverview();renderLatency();renderQueryBtns();
+}
+function stopEval(){aborted=true;document.getElementById("stopBtn").style.display="none";document.getElementById("runBtn").disabled=false}
+function renderOverview(){
+  document.getElementById("overviewContent").style.display="block";
+  const labels=QUERIES.map(q=>q.label.slice(0,20)+"…");
+  const datasets=MODES.map(m=>({label:m.label,data:QUERIES.map(q=>results[q.id]?.[m.key]?.similarity||0),backgroundColor:m.color+"cc",borderRadius:3}));
+  if(simChart)simChart.destroy();
+  simChart=new Chart(document.getElementById("simChart"),{type:"bar",data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:"#8b949e",font:{family:"JetBrains Mono",size:10}}}},scales:{x:{ticks:{color:"#8b949e",font:{size:9}},grid:{color:"#21262d"}},y:{min:0,max:1,ticks:{color:"#8b949e",font:{size:9}},grid:{color:"#21262d"}}}}});
+  const tbody=document.getElementById("summaryBody");tbody.innerHTML="";
+  MODES.forEach(m=>{
+    const sims=QUERIES.map(q=>results[q.id]?.[m.key]?.similarity||0);
+    const lats=QUERIES.map(q=>results[q.id]?.[m.key]?.latency||0);
+    const boths=QUERIES.map(q=>results[q.id]?.[m.key]?.both_count||0);
+    const avgSim=(sims.reduce((a,b)=>a+b,0)/sims.length).toFixed(3);
+    const avgLat=(lats.reduce((a,b)=>a+b,0)/lats.length).toFixed(2);
+    const bothPct=((boths.reduce((a,b)=>a+b,0)/boths.length)*20).toFixed(0);
+    tbody.innerHTML+=`<tr><td>${tag(m.label,m.color)}</td><td style="color:${m.color}">${avgSim}</td><td style="color:var(--muted)">${avgLat}s</td><td style="color:var(--muted)">${bothPct}%</td></tr>`;
+  });
+  const rows=document.getElementById("queryRows");rows.innerHTML="";
+  QUERIES.forEach(q=>{
+    const bars=MODES.map(m=>`<div><div class="mode-bar-label" style="color:${m.color}">${m.label}</div>${simBar(results[q.id]?.[m.key]?.similarity||0)}</div>`).join("");
+    rows.innerHTML+=`<div class="query-row" onclick="goDetail('${q.id}')"><div><div class="query-label">${q.label}</div>${tag(q.category,"#8b949e")}</div><div class="mode-bars">${bars}</div></div>`;
+  });
+}
+function renderQueryBtns(){
+  const wrap=document.getElementById("queryBtns");wrap.innerHTML="";
+  QUERIES.forEach(q=>{const btn=document.createElement("button");btn.className="q-btn"+(selectedQuery===q.id?" active":"");btn.textContent=q.label.slice(0,30)+"…";btn.onclick=()=>{selectedQuery=q.id;renderQueryBtns();renderDetail()};wrap.appendChild(btn)});
+}
+function goDetail(qid){selectedQuery=qid;showTab("detail");renderQueryBtns();renderDetail()}
+function renderDetail(){
+  const wrap=document.getElementById("detailContent");
+  if(!selectedQuery||!results[selectedQuery]){wrap.innerHTML=`<div style="color:var(--muted);text-align:center;padding:40px">Seleziona una query sopra</div>`;return}
+  wrap.innerHTML="";
+  MODES.forEach(m=>{
+    const r=results[selectedQuery]?.[m.key];if(!r)return;
+    const cards=(r.results||[]).map(res=>{
+      const src=res.metadata?.source||"?";
+      const title=(res.metadata?.title||"?").slice(0,40);
+      const sim=(res.similarity||0).toFixed(3);
+      const srcColor=src==="arxiv"?"var(--orange)":"var(--blue)";
+      const both=res.match_type==="both"?tag("both","var(--green)"):"";
+      return `<div class="result-card"><div class="result-sim" style="color:${m.color}">${sim}</div><div class="result-title">${title}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${tag(src,srcColor)} ${both}</div></div>`;
+    }).join("");
+    wrap.innerHTML+=`<div class="detail-block" style="background:var(--surface);border:1px solid ${m.color}33"><div class="detail-header">${tag(m.label,m.color)}<div class="detail-meta"><span>⏱ ${r.latency}s</span><span style="color:var(--blue)">mode: ${r.search_mode||"—"}</span><span>both: ${r.both_count}/5</span>${r.error?`<span style="color:var(--red)">⚠ ${r.error}</span>`:""}</div></div><div class="result-grid">${cards}</div></div>`;
+  });
+}
+function renderLatency(){
+  const labels=QUERIES.map(q=>q.label.slice(0,18)+"…");
+  const datasets=MODES.map(m=>({label:m.label,data:QUERIES.map(q=>results[q.id]?.[m.key]?.latency||0),backgroundColor:m.color+"cc",borderRadius:3}));
+  if(latChart)latChart.destroy();
+  latChart=new Chart(document.getElementById("latChart"),{type:"bar",data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:"#8b949e",font:{family:"JetBrains Mono",size:10}}}},scales:{x:{ticks:{color:"#8b949e",font:{size:9}},grid:{color:"#21262d"}},y:{ticks:{color:"#8b949e",font:{size:9}},grid:{color:"#21262d"}}}}});
+  const tbody=document.getElementById("latBody");tbody.innerHTML="";
+  const baseLats=QUERIES.map(q=>results[q.id]?.["semantic"]?.latency||0);
+  const baseAvg=baseLats.reduce((a,b)=>a+b,0)/baseLats.length;
+  MODES.forEach((m,mi)=>{
+    const lats=QUERIES.map(q=>results[q.id]?.[m.key]?.latency||0);
+    const avg=lats.reduce((a,b)=>a+b,0)/lats.length;
+    const ov=avg-baseAvg;
+    const ovC=ov>0.5?"var(--orange)":"var(--green)";
+    const ovT=mi===0?"—":`+${ov.toFixed(2)}s`;
+    tbody.innerHTML+=`<tr><td>${tag(m.label,m.color)}</td><td>${Math.min(...lats).toFixed(2)}s</td><td>${Math.max(...lats).toFixed(2)}s</td><td style="color:${m.color}">${avg.toFixed(2)}s</td><td style="color:${ovC}">${ovT}</td></tr>`;
+  });
+}
+function showTab(name){
+  activeTab=name;
+  ["overview","detail","latency"].forEach((t,i)=>{
+    document.getElementById(`tab-${t}`).style.display=t===name?"block":"none";
+    document.querySelectorAll(".tab")[i].classList.toggle("active",t===name);
+  });
+  if(name==="detail"&&selectedQuery)renderDetail();
+}
+</script>
+</body>
+</html>

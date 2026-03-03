@@ -622,6 +622,15 @@ async def root():
     return HTMLResponse(content="<h1>Chat UI not found — make sure chat_ui.html is in the same folder as api.py</h1>", status_code=404)
 
 
+@app.get("/dashboard", response_class=HTMLResponse, tags=["General"])
+async def dashboard():
+    """Serve il RAG Evaluation Dashboard."""
+    ui_path = Path(__file__).parent / "rag_eval_dashboard.html"
+    if ui_path.exists():
+        return HTMLResponse(content=ui_path.read_text(encoding="utf-8"))
+    return HTMLResponse(content="<h1>Dashboard not found — make sure rag_eval_dashboard.html is present</h1>", status_code=404)
+
+
 @app.get("/ping", tags=["General"])
 async def ping():
     return {"status": "ok"}
