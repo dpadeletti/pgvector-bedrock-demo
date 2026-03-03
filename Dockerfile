@@ -19,7 +19,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia codice applicazione e UI
-COPY api.py config.py embeddings.py init_db.py chat_ui.html ./
+COPY api.py config.py embeddings.py init_db.py chat_ui.html rag_eval_dashboard.html ./
 
 # Espone porta 8000
 EXPOSE 8000
