@@ -104,14 +104,14 @@ jobs:
 
       - name: Update image in task definition
         id: task-def
-        uses: aws-actions/amazon-ecs-render-task-def@v1
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ needs.build.outputs.image }}
 
       - name: Deploy new task definition to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-def@v2
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE }}
