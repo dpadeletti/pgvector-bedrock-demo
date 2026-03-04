@@ -3,6 +3,7 @@ name: CI/CD — Build, Test & Deploy to ECS
 on:
   push:
     branches: [main]
+  workflow_dispatch:  # ← trigger manuale dalla UI di GitHub
 
 env:
   AWS_REGION: eu-north-1
@@ -10,6 +11,7 @@ env:
   ECR_REPOSITORY: pgvector-bedrock-demo
   ECS_CLUSTER: pgvector-demo-cluster
   ECS_SERVICE: pgvector-demo-service
+  CONTAINER_NAME: pgvector-api
   IMAGE_TAG: latest
 
 jobs:
@@ -34,9 +36,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run unit & validation tests
-        # Esegue solo i test che NON richiedono DB o Bedrock.
-        # I test di integrazione (search, create, health) vanno eseguiti in locale
-        # puntando all'ambiente reale (vedi tests/README.md).
         run: |
           pytest tests/test_api.py -v \
             -k "test_root or test_docs or test_openapi or test_validation or test_create_document_validation or test_search_validation or test_search_limit"
@@ -91,25 +90,42 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Force new ECS deployment
+      - name: Download task definition from running service
         run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE }} \
-            --force-new-deployment \
-            --region ${{ env.AWS_REGION }}
-
-      - name: Wait for service stability
-        run: |
-          echo "⏳ Attendo che il servizio ECS si stabilizzi..."
-          aws ecs wait services-stable \
+          TASK_DEF_ARN=$(aws ecs describe-services \
             --cluster ${{ env.ECS_CLUSTER }} \
             --services ${{ env.ECS_SERVICE }} \
-            --region ${{ env.AWS_REGION }}
-          echo "✅ Deploy completato!"
+            --query 'services[0].taskDefinition' \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          echo "Task definition in uso: $TASK_DEF_ARN"
+          aws ecs describe-task-definition \
+            --task-definition $TASK_DEF_ARN \
+            --query taskDefinition \
+            --region ${{ env.AWS_REGION }} \
+            > task-definition.json
+          echo "Container nella task definition:"
+          cat task-definition.json | python3 -c "import sys,json; [print(c['name']) for c in json.load(sys.stdin)['containerDefinitions']]"
+
+      - name: Update image in task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ needs.build.outputs.image }}
+
+      - name: Deploy new task definition to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
 
       - name: Print ALB URL
         run: |
+          echo "✅ Deploy completato!"
           echo "🌍 API disponibile su:"
           echo "   http://pgvector-alb-1618965750.eu-north-1.elb.amazonaws.com"
           echo "   /docs  → Swagger UI"

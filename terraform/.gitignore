@@ -1,0 +1,12 @@
+# State — contiene segreti, mai in git
+terraform.tfstate
+terraform.tfstate.backup
+
+# Variabili locali con password
+terraform.tfvars
+
+# Binari provider
+.terraform/
+
+# macOS
+.DS_Store

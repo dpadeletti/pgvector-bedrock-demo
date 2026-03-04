@@ -1,0 +1,14 @@
+# ============================================================================
+# terraform.tfvars.example
+# Copia in terraform.tfvars e compila — NON committare terraform.tfvars!
+# ============================================================================
+
+aws_region    = "eu-north-1"
+account_id    = "216571348735"
+vpc_id        = "vpc-051851638dc1e5f2b"
+subnet_ids    = [
+  "subnet-021f61a35661a4659",
+  "subnet-0292c613618930ca8",
+  "subnet-0164c756bb8d43cd2",
+]
+db_password   = "YourSecurePassword123"   # stessa password del Secret esistente

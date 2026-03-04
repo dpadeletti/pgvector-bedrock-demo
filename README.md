@@ -151,6 +151,7 @@ uvicorn api:app --reload
 Base URL: http://pgvector-alb-1618965750.eu-north-1.elb.amazonaws.com
 
 GET  /          → Chat UI (interfaccia browser)
+GET  /dashboard → RAG Eval Dashboard (similarity, latency, pipeline comparison)
 GET  /health    → Health check (DB + Bedrock)
 GET  /docs      → Swagger UI
 GET  /stats     → Statistiche documenti
@@ -253,6 +254,7 @@ pgvector-bedrock-demo/
 │
 ├── api.py                    # FastAPI: /search, /chat, /documents, /stats, /health
 ├── chat_ui.html              # Chat UI dark terminal (servita su /)
+├── rag_eval_dashboard.html   # RAG Eval Dashboard (servita su /dashboard)
 ├── config.py                 # Configurazione DB e AWS
 ├── embeddings.py             # Client Bedrock Titan V2
 ├── init_db.py                # Crea tabelle + estensione pgvector
