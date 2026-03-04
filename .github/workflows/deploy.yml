@@ -12,7 +12,7 @@ env:
   ECS_CLUSTER: pgvector-demo-cluster
   ECS_SERVICE: pgvector-demo-service
   ECS_TASK_FAMILY: pgvector-demo-task
-  CONTAINER_NAME: pgvector-demo
+  CONTAINER_NAME: pgvector-api
   IMAGE_TAG: latest
 
 jobs:

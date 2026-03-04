@@ -10,7 +10,7 @@ resource "aws_cloudwatch_log_group" "ecs" {
 }
 
 resource "aws_ecs_cluster" "main" {
-  name = "pgvector-demo-cluster"
+  name = "pgvector-api"
 
   tags = local.tags
 }
