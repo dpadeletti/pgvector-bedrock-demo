@@ -10,6 +10,8 @@ env:
   ECR_REPOSITORY: pgvector-bedrock-demo
   ECS_CLUSTER: pgvector-demo-cluster
   ECS_SERVICE: pgvector-demo-service
+  ECS_TASK_FAMILY: pgvector-demo-task
+  CONTAINER_NAME: pgvector-demo
   IMAGE_TAG: latest
 
 jobs:
@@ -91,25 +93,33 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Force new ECS deployment
+      - name: Download current task definition
         run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE }} \
-            --force-new-deployment \
-            --region ${{ env.AWS_REGION }}
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_TASK_FAMILY }} \
+            --query taskDefinition \
+            --region ${{ env.AWS_REGION }} \
+            > task-definition.json
 
-      - name: Wait for service stability
-        run: |
-          echo "⏳ Attendo che il servizio ECS si stabilizzi..."
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE }} \
-            --region ${{ env.AWS_REGION }}
-          echo "✅ Deploy completato!"
+      - name: Update image in task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-def@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ needs.build.outputs.image }}
+
+      - name: Deploy new task definition to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-def@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
 
       - name: Print ALB URL
         run: |
+          echo "✅ Deploy completato!"
           echo "🌍 API disponibile su:"
           echo "   http://pgvector-alb-1618965750.eu-north-1.elb.amazonaws.com"
           echo "   /docs  → Swagger UI"
