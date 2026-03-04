@@ -11,7 +11,6 @@ env:
   ECR_REPOSITORY: pgvector-bedrock-demo
   ECS_CLUSTER: pgvector-demo-cluster
   ECS_SERVICE: pgvector-demo-service
-  ECS_TASK_FAMILY: pgvector-demo-task
   CONTAINER_NAME: pgvector-api
   IMAGE_TAG: latest
 
@@ -37,9 +36,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run unit & validation tests
-        # Esegue solo i test che NON richiedono DB o Bedrock.
-        # I test di integrazione (search, create, health) vanno eseguiti in locale
-        # puntando all'ambiente reale (vedi tests/README.md).
         run: |
           pytest tests/test_api.py -v \
             -k "test_root or test_docs or test_openapi or test_validation or test_create_document_validation or test_search_validation or test_search_limit"
@@ -94,13 +90,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Download current task definition
+      - name: Download task definition from running service
         run: |
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --query 'services[0].taskDefinition' \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          echo "Task definition in uso: $TASK_DEF_ARN"
           aws ecs describe-task-definition \
-            --task-definition ${{ env.ECS_TASK_FAMILY }} \
+            --task-definition $TASK_DEF_ARN \
             --query taskDefinition \
             --region ${{ env.AWS_REGION }} \
             > task-definition.json
+          echo "Container nella task definition:"
+          cat task-definition.json | python3 -c "import sys,json; [print(c['name']) for c in json.load(sys.stdin)['containerDefinitions']]"
 
       - name: Update image in task definition
         id: task-def
